@@ -22,11 +22,14 @@ import (
 
 const RBS = 1024
 const subid_max_length = 20
+const websocket_rate_limit = 0.5 // number of payloads (EVENT, REQ, CLOSE) per second
+const websocket_burst = 4
 
 type EventSubmission struct {
 	event  nostr.Event
 	ctx    context.Context
 	writer io.Writer
+	cancel context.CancelFunc
 }
 type ReqSubmission struct {
 	addr    string
@@ -34,6 +37,7 @@ type ReqSubmission struct {
 	filters []ParsedFilter
 	ctx     context.Context
 	writer  io.Writer
+	cancel  context.CancelFunc
 }
 type CloseSubmission struct {
 	addr string
@@ -80,9 +84,9 @@ func main() {
 		panic(err)
 	}
 
-	event_chan := make(chan EventSubmission)
-	req_chan := make(chan ReqSubmission)
-	close_chan := make(chan CloseSubmission)
+	event_chan := make(chan EventSubmission, 64)
+	req_chan := make(chan ReqSubmission, 64)
+	close_chan := make(chan CloseSubmission, 64)
 
 	go EventSubmissionHandler(event_chan, dbpool)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool)
@@ -125,7 +129,8 @@ func main() {
 			control := bytes_buf_pool.Get().(*bytes.Buffer)
 			mask_buf := mask_buf_pool.Get().([]byte)
 			json_msg := json_msg_pool.Get().([]json.RawMessage)
-
+			var r rate.Limit = websocket_rate_limit
+			limiter := rate.NewLimiter(r, websocket_burst)
 			defer func() {
 				// cancel context and release buffers back to pool
 				cancel()
@@ -150,7 +155,6 @@ func main() {
 					fmt.Println("unknown error", conn.RemoteAddr(), err.Error())
 					return
 				}
-
 				// reset payload or control buffer
 				if (header.OpCode != ws.OpContinuation) && header.OpCode.IsData() {
 					if payload.Len() != 0 {
@@ -237,7 +241,9 @@ func main() {
 						event:  ev,
 						ctx:    ctx,
 						writer: conn,
+						cancel: cancel,
 					}
+
 				case json_msg[0][1] == 'R':
 					filters := make([]ParsedFilter, 0)
 					var id string
@@ -278,6 +284,7 @@ func main() {
 						filters: filters,
 						ctx:     ctx,
 						writer:  conn,
+						cancel:  cancel,
 					}
 				case json_msg[0][1] == 'C':
 					var id string
@@ -304,6 +311,10 @@ func main() {
 						ctx:  ctx,
 					}
 				}
+				if e := limiter.Wait(ctx); e != nil {
+					fmt.Println("connection closed 3", conn.RemoteAddr())
+					return
+				}
 			}
 		}()
 	}
@@ -311,13 +322,19 @@ func main() {
 
 func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool) {
 	limiter := rate.NewLimiter(25, 5)
+	dbconn, e := dbpool.Acquire(context.Background())
+	if e != nil {
+		panic(e)
+	}
 	for {
 		ev := <-event_chan
 		if e := limiter.Wait(ev.ctx); e == nil {
-			if err := StoreEvent(ev.ctx, dbpool, ev.event); err != nil {
-				panic(err)
+			if e := ev.StoreEvent(dbconn); e != nil {
+				panic(e)
 			}
-			ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID))))
+			if e := ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID)))); e != nil {
+				ev.cancel()
+			}
 		}
 	}
 }
@@ -363,7 +380,7 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 						buf.Write(newsub.Raw)
 						buf.WriteByte(']')
 						if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
-							panic(err)
+							req.cancel()
 						}
 						break
 					}
@@ -376,6 +393,7 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 	// handler for incoming reqs.
 	// allocations:
 	buf := bytes.NewBuffer(nil)
+	pf_buf := make([]ParsedFilter, 0)
 	raw := new(json.RawMessage)
 	for {
 		select {
@@ -385,37 +403,48 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				if e != nil {
 					panic(e)
 				}
-				query, e := req.SQL()
-				if e != nil {
-					panic(e)
-				}
-				rows, e := dbconn.Query(req.ctx, query)
-				if e != nil {
-					panic(e)
-				}
-				for rows.Next() {
+				func() {
+					defer dbconn.Release()
+					query, e := req.SQL()
+					if e != nil {
+						panic(e)
+					}
+					rows, e := dbconn.Query(req.ctx, query)
+					if e != nil {
+						panic(e)
+					}
+					for rows.Next() {
+						if req.ctx.Err() != nil {
+							return
+						}
+						buf.Reset()
+						buf.Write([]byte(fmt.Sprintf("[\"EVENT\",\"%s\",", req.id)))
+						if err := rows.Scan(raw); err != nil || raw == nil {
+							panic(err)
+						}
+						buf.Write(*raw)
+						buf.WriteByte(']')
+						if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
+							req.cancel()
+							return
+						}
+					}
 					buf.Reset()
-					buf.Write([]byte(fmt.Sprintf("[\"EVENT\",\"%s\",", req.id)))
-					if err := rows.Scan(raw); err != nil || raw == nil {
-						panic(err)
-					}
-					buf.Write(*raw)
-					buf.WriteByte(']')
+					buf.Write([]byte(fmt.Sprintf("[\"EOSE\",\"%s\"]", req.id)))
 					if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
-						panic(err)
+						req.cancel()
+						return
 					}
-				}
-				dbconn.Release()
-				buf.Reset()
-				buf.Write([]byte(fmt.Sprintf("[\"EOSE\",\"%s\"]", req.id)))
-				if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
-					panic(err)
-				}
-				uid := req.addr + "/" + req.id
-				fmt.Println(req.addr+"/"+req.id, "added")
-				mu.Lock()
-				subids[uid] = req
-				mu.Unlock()
+					uid := req.addr + "/" + req.id
+					if err := req.Cull(pf_buf); err != nil {
+						fmt.Println(uid, "culled!")
+						return
+					}
+					fmt.Println(uid, "added!")
+					mu.Lock()
+					subids[uid] = req
+					mu.Unlock()
+				}()
 			}
 		case close := <-close_chan:
 			limiter.Wait(close.ctx)
@@ -423,7 +452,7 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				continue
 			}
 			uid := close.addr + "/" + close.id
-			fmt.Println(uid, "deleted")
+			fmt.Println(uid, "deleted!")
 			mu.Lock()
 			delete(subids, uid)
 			mu.Unlock()

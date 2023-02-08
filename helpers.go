@@ -30,6 +30,8 @@ type ParsedFilter struct {
 	Limit   *int
 }
 
+const max_limit = 25
+
 func (req ReqSubmission) SQL() (string, error) {
 	queries := make([]string, len(req.filters))
 	var limit int
@@ -43,28 +45,47 @@ func (req ReqSubmission) SQL() (string, error) {
 			queries[i] = "(" + s + ")"
 		}
 	}
-	if limit == 0 {
-		limit = 25
+	if limit == 0 || limit > max_limit {
+		limit = max_limit
 	}
 	query := "SELECT raw FROM db1 WHERE " + strings.Join(queries, " OR ") + fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
 	return query, nil
 }
 
+func (req *ReqSubmission) Cull(pf_buf []ParsedFilter) error {
+	pf_buf = req.filters
+	req.filters = req.filters[:0]
+	for _, f := range pf_buf {
+		// remove any filters which have IDs or Until field set
+		if f.IDs != nil || f.Until != nil {
+			continue
+		}
+		req.filters = append(req.filters, f)
+	}
+	if len(req.filters) == 0 {
+		return fmt.Errorf("no filters remain")
+	}
+	return nil
+}
+
 func (q ParsedFilter) sql() (query string, err error) {
-	err = fmt.Errorf("convert to SQL error")
 	conditions := make([]string, 0)
 	if len(q.Authors) > 0 {
 		likekeys := make([]string, 0, len(q.Authors))
 		for _, key := range q.Authors {
+			if len(key)%2 != 0 {
+				key = key[:len(key)-1]
+			}
 			// prevent sql attack here!
-			parsed, err := hex.DecodeString(key)
-			if err != nil || len(parsed) > 32 {
+			parsed, e := hex.DecodeString(key)
+			if e != nil || len(parsed) > 32 {
 				continue
 			}
 			likekeys = append(likekeys, fmt.Sprintf("pubkey LIKE '%x%%'", parsed))
 		}
 		if len(likekeys) == 0 {
 			// authors being [] mean you won't get anything
+			err = fmt.Errorf("invalid authors field")
 			return
 		}
 		conditions = append(conditions, "("+strings.Join(likekeys, " OR ")+")")
@@ -73,14 +94,18 @@ func (q ParsedFilter) sql() (query string, err error) {
 		likeids := make([]string, 0, len(q.IDs))
 		for _, key := range q.IDs {
 			// prevent sql attack here!
-			parsed, err := hex.DecodeString(key)
-			if err != nil || len(parsed) > 32 {
+			if len(key)%2 != 0 {
+				key = key[:len(key)-1]
+			}
+			parsed, e := hex.DecodeString(key)
+			if e != nil || len(parsed) > 32 {
 				continue
 			}
 			likeids = append(likeids, fmt.Sprintf("id LIKE '%x%%'", parsed))
 		}
 		if len(likeids) == 0 {
-			// authors being [] mean you won't get anything
+			// ids being [] mean you won't get anything
+			err = fmt.Errorf("invalid ids field")
 			return
 		}
 		conditions = append(conditions, "("+strings.Join(likeids, " OR ")+")")
@@ -89,14 +114,15 @@ func (q ParsedFilter) sql() (query string, err error) {
 		array_tags := make([]string, 0, len(q.Ptags))
 		for _, key := range q.Ptags {
 			// prevent sql attack here!
-			parsed, err := hex.DecodeString(key)
-			if err != nil || len(parsed) != 32 {
+			parsed, e := hex.DecodeString(key)
+			if e != nil || len(parsed) != 32 {
 				continue
 			}
 			array_tags = append(array_tags, fmt.Sprintf("'%x'", parsed))
 		}
 		if len(array_tags) == 0 {
-			// authors being [] mean you won't get anything
+			// ptags being [] mean you won't get anything
+			err = fmt.Errorf("invalid #p tags")
 			return
 		}
 		conditions = append(conditions, fmt.Sprintf("ptags && ARRAY[%s]", strings.Join(array_tags, ",")))
@@ -106,14 +132,14 @@ func (q ParsedFilter) sql() (query string, err error) {
 		array_tags := make([]string, 0, len(q.Etags))
 		for _, key := range q.Etags {
 			// prevent sql attack here!
-			parsed, err := hex.DecodeString(key)
-			if err != nil || len(parsed) != 32 {
+			parsed, e := hex.DecodeString(key)
+			if e != nil || len(parsed) != 32 {
 				continue
 			}
 			array_tags = append(array_tags, fmt.Sprintf("'%x'", parsed))
 		}
 		if len(array_tags) == 0 {
-			// authors being [] mean you won't get anything
+			err = fmt.Errorf("invalid #e tags")
 			return
 		}
 		conditions = append(conditions, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(array_tags, ",")))
