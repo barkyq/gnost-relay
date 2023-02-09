@@ -7,7 +7,7 @@ import (
 	"github.com/gobwas/ws"
 )
 
-const nip11_info_document = "{\"contact\":\"barkyq\",\"description\":\"GNOST Relay\",\"name\":\"GNOST Relay\",\"pubkey\":\"\",\"software\":\"git+https://github.com/barkyq/gnost-relay\",\"supported_nips\":[1,9,11,16,20,22,33],\"version\":\"0.0\"}"
+const nip11_info_document = "{\"contact\":\"barkyq\",\"description\":\"GNOST Relay\",\"name\":\"GNOST Relay\",\"pubkey\":\"\",\"software\":\"git+https://github.com/barkyq/gnost-relay\",\"supported_nips\":[1,9,11,16,20,22,33,42],\"version\":\"0.0\"}"
 
 func NIP11_bytes() ([]byte, error) {
 	bw := bytes.NewBuffer(nil)

@@ -28,6 +28,7 @@ type ParsedFilter struct {
 	Since   *int64
 	Until   *int64
 	Limit   *int
+	Dtags   []string
 }
 
 const max_limit = 25
@@ -179,6 +180,9 @@ func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
 
 	var visiterr error
 	obj.Visit(func(k []byte, v *fastjson.Value) {
+		if visiterr != nil {
+			return
+		}
 		key := string(k)
 		switch key {
 		case "ids":
@@ -224,6 +228,13 @@ func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
 			if err != nil {
 				visiterr = fmt.Errorf("invalid '#e' field: %w", err)
 			}
+		case "#d":
+			q.Dtags, err = fastjsonArrayToStringList(v)
+			if err != nil {
+				visiterr = fmt.Errorf("invalid '#d' field: %w", err)
+			}
+		default:
+			visiterr = fmt.Errorf("cannot query for key %s", key)
 		}
 	})
 	if visiterr != nil {

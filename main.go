@@ -3,6 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"math/rand"
+	"os"
+	"time"
+
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +21,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip42"
 
 	"golang.org/x/time/rate"
 )
@@ -24,6 +30,8 @@ const RBS = 1024
 const subid_max_length = 20
 const websocket_rate_limit = 0.5 // number of payloads (EVENT, REQ, CLOSE) per second
 const websocket_burst = 4
+const r rate.Limit = websocket_rate_limit
+const relay_url = "localhost"
 
 type EventSubmission struct {
 	event  nostr.Event
@@ -72,11 +80,17 @@ func main() {
 		},
 	}
 
-	// generate the nip_11_bytes
+	// NIP_11_bytes. Read Only so don't need Mutex
 	nip_11_bytes, err := NIP11_bytes()
 	if err != nil {
 		panic(err)
 	}
+
+	// for generating NIP-42 AUTH challenges
+	// need mutex since rand_reader is not safe for concurrent use
+	var rand_mu sync.Mutex
+	rand_reader := rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid())))
+	var challenge_bytes [16]byte
 
 	// start the listener
 	ln, err := net.Listen("tcp", "localhost:8080")
@@ -88,6 +102,7 @@ func main() {
 	req_chan := make(chan ReqSubmission, 64)
 	close_chan := make(chan CloseSubmission, 64)
 
+	// start handlers
 	go EventSubmissionHandler(event_chan, dbpool)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool)
 
@@ -101,6 +116,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+
 		// one go routine per conn
 		go func() {
 			defer conn.Close()
@@ -119,7 +135,7 @@ func main() {
 						return
 					}
 				} else {
-					// upgrade successful! break to main websocket handler
+					// Upgrade successful! Break to main websocket handler.
 					break
 				}
 			}
@@ -129,8 +145,8 @@ func main() {
 			control := bytes_buf_pool.Get().(*bytes.Buffer)
 			mask_buf := mask_buf_pool.Get().([]byte)
 			json_msg := json_msg_pool.Get().([]json.RawMessage)
-			var r rate.Limit = websocket_rate_limit
 			limiter := rate.NewLimiter(r, websocket_burst)
+
 			defer func() {
 				// cancel context and release buffers back to pool
 				cancel()
@@ -139,6 +155,18 @@ func main() {
 				mask_buf_pool.Put(mask_buf)
 				json_msg_pool.Put(json_msg)
 			}()
+
+			// generate websocket_id
+			rand_mu.Lock()
+			rand_reader.Read(challenge_bytes[:])
+			websocket_id := base64.StdEncoding.EncodeToString(challenge_bytes[:])
+			rand_mu.Unlock()
+			var authenticated_user string
+
+			// send NIP-42 challenge
+			if err := ws.WriteFrame(conn, ws.NewTextFrame([]byte(fmt.Sprintf("[\"AUTH\",\"%s\"]", websocket_id)))); err != nil {
+				return
+			}
 
 			// post upgrade handler
 			for {
@@ -225,17 +253,42 @@ func main() {
 					continue
 				}
 				switch {
+				case json_msg[0][1] == 'A':
+					ev := nostr.Event{}
+					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
+						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid AUTH\"]"))
+						if err = ws.WriteFrame(conn, frame); err != nil {
+							return
+						}
+						// break hits the rate limiter
+						break
+					}
+					if pub, ok := nip42.ValidateAuthEvent(&ev, websocket_id, relay_url); ok == true {
+						authenticated_user = pub
+						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Authenticated as %s\"]", pub)))
+						if err := ws.WriteFrame(conn, frame); err != nil {
+							return
+						}
+						// continue skips the rate limiter
+						continue
+					} else {
+						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Authentication failed!\"]"))
+						if err := ws.WriteFrame(conn, frame); err != nil {
+							return
+						}
+						// End of block acts as break. Will hit the rate limiter
+					}
 				case json_msg[0][1] == 'E':
 					ev := nostr.Event{}
 					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid EVENT\"]"))
 						ws.WriteFrame(conn, frame)
-						continue
+						break
 					}
 					if b, e := ev.CheckSignature(); e != nil || b != true {
 						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",false,\"\"]", ev.ID)))
 						ws.WriteFrame(conn, frame)
-						continue
+						break
 					}
 					event_chan <- EventSubmission{
 						event:  ev,
@@ -243,40 +296,77 @@ func main() {
 						writer: conn,
 						cancel: cancel,
 					}
-
 				case json_msg[0][1] == 'R':
 					filters := make([]ParsedFilter, 0)
 					var id string
-					var invalid bool
 					if len(json_msg) < 3 {
-						invalid = true
-						goto jump
+						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"REQ message too short.\"]"))
+						if e := ws.WriteFrame(conn, frame); e != nil {
+							return
+						}
+						break
 					}
 					if err := json.Unmarshal(json_msg[1], &id); err != nil {
-						invalid = true
-						goto jump
+						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Cannot parse REQ message.\"]"))
+						if e := ws.WriteFrame(conn, frame); e != nil {
+							return
+						}
+						break
 					}
+					if len(id) > subid_max_length {
+						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Subscription ID %s is too long. Max length %d.\"]", id, subid_max_length)))
+						if e := ws.WriteFrame(conn, frame); e != nil {
+							return
+						}
+						break
+					}
+					// parse all the filters and discard any invalid ones
 					for _, f := range json_msg[2:] {
 						var filter ParsedFilter
 						if err := json.Unmarshal(
 							f,
 							&filter,
 						); err != nil {
-							invalid = true
-							goto jump
+							frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Invalid filter in %s: %s.\"]", id, err.Error())))
+							if e := ws.WriteFrame(conn, frame); e != nil {
+								return
+							}
+							goto skip
 						}
+						if len(filter.Kinds) == 0 {
+							filter.Kinds = []int{1}
+							// we know there is no kind 4
+							// jump straight to append
+							goto append
+						}
+						for _, k := range filter.Kinds {
+							if k == 4 {
+								switch {
+								case authenticated_user != "" && len(filter.Authors) == 1 && authenticated_user == filter.Authors[0]:
+									// sole author is authenticated user
+									goto append
+								case authenticated_user != "" && len(filter.Ptags) == 1 && authenticated_user == filter.Ptags[0]:
+									// sole receiver is authenticated user
+									goto append
+								default:
+									frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Invalid filter in %s: user is not authenticated as sender or receiver.\"]", id)))
+									if e := ws.WriteFrame(conn, frame); e != nil {
+										return
+									}
+									goto skip
+								}
+							}
+						}
+					append:
 						filters = append(filters, filter)
+					skip:
 					}
-				jump:
-					if invalid || len(id) == 0 || len(id) > subid_max_length {
-						var frame ws.Frame
-						if invalid || len(id) == 0 {
-							frame = ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid REQ message.\"]"))
-						} else {
-							frame = ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Subscription ID %s is too long. Max length %d.\"]", id, subid_max_length)))
+					if len(filters) == 0 {
+						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"No filters were accepted. REQ Cancelled.\"]")))
+						if e := ws.WriteFrame(conn, frame); e != nil {
+							return
 						}
-						ws.WriteFrame(conn, frame)
-						continue
+						break
 					}
 					req_chan <- ReqSubmission{
 						addr:    conn.RemoteAddr().String(),
