@@ -28,9 +28,8 @@ import (
 
 const RBS = 1024
 const subid_max_length = 20
-const websocket_rate_limit = 0.5 // number of payloads (EVENT, REQ, CLOSE) per second
+const websocket_rate_limit rate.Limit = 0.5 // number of payloads (EVENT, REQ, CLOSE) per second
 const websocket_burst = 4
-const r rate.Limit = websocket_rate_limit
 const relay_url = "localhost"
 
 type EventSubmission struct {
@@ -87,7 +86,7 @@ func main() {
 	}
 
 	// for generating NIP-42 AUTH challenges
-	// need mutex since rand_reader is not safe for concurrent use
+	// rand_reader is not safe for concurrent use
 	var rand_mu sync.Mutex
 	rand_reader := rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid())))
 	var challenge_bytes [16]byte
@@ -145,7 +144,7 @@ func main() {
 			control := bytes_buf_pool.Get().(*bytes.Buffer)
 			mask_buf := mask_buf_pool.Get().([]byte)
 			json_msg := json_msg_pool.Get().([]json.RawMessage)
-			limiter := rate.NewLimiter(r, websocket_burst)
+			limiter := rate.NewLimiter(websocket_rate_limit, websocket_burst)
 
 			defer func() {
 				// cancel context and release buffers back to pool
@@ -480,6 +479,28 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 		}
 	}()
 
+	// to prevent SQL injections
+	sql_dollar_quote := func() string {
+		var b [20]byte
+		rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid()))).Read(b[:])
+		for i, x := range b {
+			if x > 128 {
+				x = x - 128
+			}
+			if x < 65 {
+				x = 65 + x/3
+			}
+			if x > 90 {
+				x = x + 7
+			}
+			if x > 122 {
+				x = 122
+			}
+			b[i] = x
+		}
+		return string(b[:])
+	}()
+
 	// handler for incoming reqs.
 	// allocations:
 	buf := bytes.NewBuffer(nil)
@@ -495,7 +516,7 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				}
 				func() {
 					defer dbconn.Release()
-					query, e := req.SQL()
+					query, e := req.SQL(sql_dollar_quote)
 					if e != nil {
 						panic(e)
 					}

@@ -15,6 +15,7 @@ func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn) error {
 	}
 	ptags := make([]string, 0)
 	etags := make([]string, 0)
+	gtags := make([]string, 0)
 	var dtag string
 	for _, tag := range ev.event.Tags {
 		switch {
@@ -24,11 +25,13 @@ func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn) error {
 			ptags = append(ptags, tag[1])
 		case tag[0] == "d":
 			dtag = tag[1]
+		case len(tag[0]) == 1 && len(tag) > 0:
+			gtags = append(gtags, "#"+tag[0]+":"+tag[1])
 		}
 	}
-	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, raw)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, b)
+	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, gtags, raw)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, gtags, b)
 	if e != nil {
 		return e
 	}
@@ -49,6 +52,7 @@ CREATE TABLE IF NOT EXISTS db1 (
   etags text[],
   ptags text[],
   dtag text,
+  gtags text[],
   raw json
 );
 
@@ -58,6 +62,7 @@ CREATE INDEX IF NOT EXISTS db1_timeidx ON db1 (created_at DESC);
 CREATE INDEX IF NOT EXISTS db1_kindidx ON db1 (kind);
 CREATE INDEX IF NOT EXISTS db1_ptagsidx ON db1 USING gin (etags);
 CREATE INDEX IF NOT EXISTS db1_etagsidx ON db1 USING gin (ptags);
+CREATE INDEX IF NOT EXISTS db1_gtagsidx ON db1 USING gin (gtags);
 
 CREATE OR REPLACE FUNCTION delete_submission() RETURNS trigger AS $$
 BEGIN  
@@ -100,7 +105,7 @@ CREATE OR REPLACE FUNCTION replaceable_submission() RETURNS trigger AS $$
 DECLARE 
 ca integer;
 BEGIN  
-  IF int4range(10000,19999) @> NEW.kind OR NEW.kind in (0,2,3) THEN
+  IF int4range(10000,19999) @> NEW.kind OR NEW.kind in (0,2,3,41) THEN
     SELECT created_at INTO ca FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey;
     IF NOT FOUND OR NEW.created_at > ca THEN
       DELETE FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey AND created_at <= NEW.created_at;

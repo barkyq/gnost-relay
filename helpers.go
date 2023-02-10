@@ -16,6 +16,8 @@ type DBNotification struct {
 	Kind      int
 	Etags     []string
 	Ptags     []string
+	Dtag      string
+	Gtags     []string
 	Raw       []byte
 }
 
@@ -29,18 +31,19 @@ type ParsedFilter struct {
 	Until   *int64
 	Limit   *int
 	Dtags   []string
+	Gtags   []string
 }
 
 const max_limit = 25
 
-func (req ReqSubmission) SQL() (string, error) {
+func (req ReqSubmission) SQL(sql_dollar_quote string) (string, error) {
 	queries := make([]string, len(req.filters))
 	var limit int
 	for i, q := range req.filters {
 		if q.Limit != nil && limit < *q.Limit {
 			limit = *q.Limit
 		}
-		if s, e := q.sql(); e != nil {
+		if s, e := q.sql(sql_dollar_quote); e != nil {
 			return "", e
 		} else {
 			queries[i] = "(" + s + ")"
@@ -69,7 +72,7 @@ func (req *ReqSubmission) Cull(pf_buf []ParsedFilter) error {
 	return nil
 }
 
-func (q ParsedFilter) sql() (query string, err error) {
+func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 	conditions := make([]string, 0)
 	if len(q.Authors) > 0 {
 		likekeys := make([]string, 0, len(q.Authors))
@@ -145,6 +148,32 @@ func (q ParsedFilter) sql() (query string, err error) {
 		}
 		conditions = append(conditions, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(array_tags, ",")))
 	}
+	if len(q.Gtags) > 0 {
+		array_tags := make([]string, 0, len(q.Gtags))
+		for _, key := range q.Gtags {
+			// TODO: prevent sql attack here!
+			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
+		}
+		if len(array_tags) == 0 {
+			err = fmt.Errorf("invalid query tags")
+			return
+		}
+		conditions = append(conditions, fmt.Sprintf("gtags && ARRAY[%s]", strings.Join(array_tags, ",")))
+	}
+
+	if len(q.Dtags) > 0 {
+		array_tags := make([]string, 0, len(q.Dtags))
+		for _, key := range q.Dtags {
+			// TODO: prevent sql attack here!
+			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
+		}
+		if len(array_tags) == 0 {
+			err = fmt.Errorf("invalid query tags")
+			return
+		}
+		conditions = append(conditions, fmt.Sprintf("ARRAY[dtag] && ARRAY[%s]", strings.Join(array_tags, ",")))
+	}
+
 	if len(q.Kinds) > 0 {
 		// no sql injection issues since these are ints
 		inkinds := make([]string, len(q.Kinds))
@@ -234,7 +263,17 @@ func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
 				visiterr = fmt.Errorf("invalid '#d' field: %w", err)
 			}
 		default:
-			visiterr = fmt.Errorf("cannot query for key %s", key)
+			if len(key) != 2 {
+				visiterr = fmt.Errorf("cannot query for key %s", key)
+			} else {
+				if tmp, err := fastjsonArrayToStringList(v); err == nil {
+					for _, s := range tmp {
+						q.Gtags = append(q.Gtags, key+":"+s)
+					}
+				} else {
+					visiterr = fmt.Errorf("invalid %s field: %w", key, err)
+				}
+			}
 		}
 	})
 	if visiterr != nil {
@@ -242,8 +281,6 @@ func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
 	}
 	return nil
 }
-
-//{"created_at":1675736335,"kind":1,"etags":[],"ptags":[],"raw":{
 
 func (p *DBNotification) UnmarshalJSON(payload []byte) error {
 	var fastjsonParser fastjson.Parser
@@ -354,11 +391,33 @@ etags:
 	return
 kinds:
 	if len(q.Kinds) == 0 {
-		goto ids
+		goto dtags
 	}
 	for _, b := range q.Kinds {
 		if b == p.Kind {
-			goto ids
+			goto dtags
+		}
+	}
+	return
+dtags:
+	if len(q.Dtags) == 0 {
+		goto gtags
+	}
+	for _, b := range q.Dtags {
+		if b == p.Dtag {
+			goto gtags
+		}
+	}
+	return
+gtags:
+	if len(q.Gtags) == 0 {
+		goto ids
+	}
+	for _, a := range p.Gtags {
+		for _, b := range q.Gtags {
+			if b == a {
+				goto ids
+			}
 		}
 	}
 	return
