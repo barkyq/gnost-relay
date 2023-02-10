@@ -36,10 +36,10 @@ type ParsedFilter struct {
 
 const max_limit = 25
 
-func (req ReqSubmission) SQL(sql_dollar_quote string) (string, error) {
-	queries := make([]string, len(req.filters))
+func SQL(filters []ParsedFilter, sql_dollar_quote string) (string, error) {
+	queries := make([]string, len(filters))
 	var limit int
-	for i, q := range req.filters {
+	for i, q := range filters {
 		if q.Limit != nil && limit < *q.Limit {
 			limit = *q.Limit
 		}
@@ -94,6 +94,7 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 		}
 		conditions = append(conditions, "("+strings.Join(likekeys, " OR ")+")")
 	}
+
 	if len(q.IDs) > 0 {
 		likeids := make([]string, 0, len(q.IDs))
 		for _, key := range q.IDs {
@@ -114,6 +115,7 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 		}
 		conditions = append(conditions, "("+strings.Join(likeids, " OR ")+")")
 	}
+
 	if len(q.Ptags) > 0 {
 		array_tags := make([]string, 0, len(q.Ptags))
 		for _, key := range q.Ptags {
@@ -148,10 +150,14 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 		}
 		conditions = append(conditions, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(array_tags, ",")))
 	}
+
 	if len(q.Gtags) > 0 {
 		array_tags := make([]string, 0, len(q.Gtags))
 		for _, key := range q.Gtags {
-			// TODO: prevent sql attack here!
+			if strings.Contains(key, sql_dollar_quote) {
+				err = fmt.Errorf("SQL injection attack detected")
+				return
+			}
 			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
 		}
 		if len(array_tags) == 0 {
@@ -164,7 +170,10 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 	if len(q.Dtags) > 0 {
 		array_tags := make([]string, 0, len(q.Dtags))
 		for _, key := range q.Dtags {
-			// TODO: prevent sql attack here!
+			if strings.Contains(key, sql_dollar_quote) {
+				err = fmt.Errorf("SQL injection attack detected")
+				return
+			}
 			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
 		}
 		if len(array_tags) == 0 {
@@ -467,6 +476,7 @@ func fastjsonArrayToStringList(v *fastjson.Value) ([]string, error) {
 
 	return sl, nil
 }
+
 func fastjsonArrayToIntList(v *fastjson.Value) ([]int, error) {
 	arr, err := v.Array()
 	if err != nil {
@@ -482,4 +492,24 @@ func fastjsonArrayToIntList(v *fastjson.Value) ([]int, error) {
 	}
 
 	return il, nil
+}
+
+// to prevent SQL injections, use $tag$ string $tag$ construction, with random tag
+func gen_sql_dollar_quote(b [32]byte) string {
+	for i, x := range b {
+		if x > 128 {
+			x = x - 128
+		}
+		if x < 65 {
+			x = 65 + x/3
+		}
+		if x > 90 {
+			x = x + 7
+		}
+		if x > 122 {
+			x = 122
+		}
+		b[i] = x
+	}
+	return string(b[:])
 }

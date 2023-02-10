@@ -44,6 +44,7 @@ type ReqSubmission struct {
 	filters []ParsedFilter
 	ctx     context.Context
 	writer  io.Writer
+	query   string
 	cancel  context.CancelFunc
 }
 type CloseSubmission struct {
@@ -109,6 +110,11 @@ func main() {
 	upgrader := ws.Upgrader{
 		OnHeader: NIP11_hijack_header,
 	}
+
+	// random string to prevent SQL injections
+	var b [32]byte
+	rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid()))).Read(b[:])
+	sql_dollar_quote := gen_sql_dollar_quote(b)
 
 	for {
 		conn, err := ln.Accept()
@@ -361,8 +367,17 @@ func main() {
 					skip:
 					}
 					if len(filters) == 0 {
-						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"No filters were accepted. REQ Cancelled.\"]")))
+						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"No filters were accepted. REQ Cancelled.\"]"))
 						if e := ws.WriteFrame(conn, frame); e != nil {
+							return
+						}
+						break
+					}
+					// generate the query
+					query, e := SQL(filters, sql_dollar_quote)
+					if e != nil {
+						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"SQL Query Error: %s\"]", e.Error())))
+						if e = ws.WriteFrame(conn, frame); e != nil {
 							return
 						}
 						break
@@ -374,6 +389,7 @@ func main() {
 						ctx:     ctx,
 						writer:  conn,
 						cancel:  cancel,
+						query:   query,
 					}
 				case json_msg[0][1] == 'C':
 					var id string
@@ -479,28 +495,6 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 		}
 	}()
 
-	// to prevent SQL injections
-	sql_dollar_quote := func() string {
-		var b [20]byte
-		rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid()))).Read(b[:])
-		for i, x := range b {
-			if x > 128 {
-				x = x - 128
-			}
-			if x < 65 {
-				x = 65 + x/3
-			}
-			if x > 90 {
-				x = x + 7
-			}
-			if x > 122 {
-				x = 122
-			}
-			b[i] = x
-		}
-		return string(b[:])
-	}()
-
 	// handler for incoming reqs.
 	// allocations:
 	buf := bytes.NewBuffer(nil)
@@ -516,11 +510,8 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				}
 				func() {
 					defer dbconn.Release()
-					query, e := req.SQL(sql_dollar_quote)
-					if e != nil {
-						panic(e)
-					}
-					rows, e := dbconn.Query(req.ctx, query)
+
+					rows, e := dbconn.Query(req.ctx, req.query)
 					if e != nil {
 						panic(e)
 					}
