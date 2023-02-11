@@ -79,6 +79,12 @@ func main() {
 			return make([]json.RawMessage, 0)
 		},
 	}
+	var string_buf_pool = sync.Pool{
+		New: func() any {
+			fmt.Println("new string buf!")
+			return make([]string, 0)
+		},
+	}
 
 	// NIP_11_bytes. Read Only so don't need Mutex
 	nip_11_bytes, err := NIP11_bytes()
@@ -374,7 +380,8 @@ func main() {
 						break
 					}
 					// generate the query
-					query, e := SQL(filters, sql_dollar_quote)
+					// use string buf pool to optimize memory allocations
+					query, e := SQL(filters, sql_dollar_quote, &string_buf_pool)
 					if e != nil {
 						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"SQL Query Error: %s\"]", e.Error())))
 						if e = ws.WriteFrame(conn, frame); e != nil {

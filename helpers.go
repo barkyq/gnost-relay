@@ -1,10 +1,12 @@
 package main
 
 import (
+
 	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/valyala/fastjson"
 )
@@ -36,23 +38,26 @@ type ParsedFilter struct {
 
 const max_limit = 25
 
-func SQL(filters []ParsedFilter, sql_dollar_quote string) (string, error) {
-	queries := make([]string, len(filters))
+func SQL(filters []ParsedFilter, sql_dollar_quote string, pool *sync.Pool) (string, error) {
+	queries := pool.Get().([]string)
+	defer pool.Put(queries)
+	queries = queries[:0]
 	var limit int
-	for i, q := range filters {
+	for _, q := range filters {
 		if q.Limit != nil && limit < *q.Limit {
 			limit = *q.Limit
 		}
-		if s, e := q.sql(sql_dollar_quote); e != nil {
+		if s, e := q.sql(sql_dollar_quote, pool); e != nil {
 			return "", e
 		} else {
-			queries[i] = "(" + s + ")"
+			queries = append(queries, "("+s+")")
 		}
 	}
 	if limit == 0 || limit > max_limit {
 		limit = max_limit
 	}
 	query := "SELECT raw FROM db1 WHERE " + strings.Join(queries, " OR ") + fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
+	
 	return query, nil
 }
 
@@ -72,10 +77,15 @@ func (req *ReqSubmission) Cull(pf_buf []ParsedFilter) error {
 	return nil
 }
 
-func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
-	conditions := make([]string, 0)
+func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query string, err error) {
+	buffer1 := pool.Get().([]string)
+	buffer2 := pool.Get().([]string)
+	defer pool.Put(buffer1)
+	defer pool.Put(buffer2)
+
+	buffer1 = buffer1[:0]
+	buffer2 = buffer2[:0]
 	if len(q.Authors) > 0 {
-		likekeys := make([]string, 0, len(q.Authors))
 		for _, key := range q.Authors {
 			if len(key)%2 != 0 {
 				key = key[:len(key)-1]
@@ -85,18 +95,19 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 			if e != nil || len(parsed) > 32 {
 				continue
 			}
-			likekeys = append(likekeys, fmt.Sprintf("pubkey LIKE '%x%%'", parsed))
+
+			buffer2 = append(buffer2, fmt.Sprintf("pubkey LIKE '%x%%'", parsed))
 		}
-		if len(likekeys) == 0 {
+		if len(buffer2) == 0 {
 			// authors being [] mean you won't get anything
 			err = fmt.Errorf("invalid authors field")
 			return
 		}
-		conditions = append(conditions, "("+strings.Join(likekeys, " OR ")+")")
+		buffer1 = append(buffer1, "("+strings.Join(buffer2, " OR ")+")")
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.IDs) > 0 {
-		likeids := make([]string, 0, len(q.IDs))
 		for _, key := range q.IDs {
 			// prevent sql attack here!
 			if len(key)%2 != 0 {
@@ -106,102 +117,103 @@ func (q ParsedFilter) sql(sql_dollar_quote string) (query string, err error) {
 			if e != nil || len(parsed) > 32 {
 				continue
 			}
-			likeids = append(likeids, fmt.Sprintf("id LIKE '%x%%'", parsed))
+			buffer2 = append(buffer2, fmt.Sprintf("id LIKE '%x%%'", parsed))
 		}
-		if len(likeids) == 0 {
+		if len(buffer2) == 0 {
 			// ids being [] mean you won't get anything
 			err = fmt.Errorf("invalid ids field")
 			return
 		}
-		conditions = append(conditions, "("+strings.Join(likeids, " OR ")+")")
+		buffer1 = append(buffer1, "("+strings.Join(buffer2, " OR ")+")")
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.Ptags) > 0 {
-		array_tags := make([]string, 0, len(q.Ptags))
 		for _, key := range q.Ptags {
 			// prevent sql attack here!
 			parsed, e := hex.DecodeString(key)
 			if e != nil || len(parsed) != 32 {
 				continue
 			}
-			array_tags = append(array_tags, fmt.Sprintf("'%x'", parsed))
+			buffer2 = append(buffer2, fmt.Sprintf("'%x'", parsed))
 		}
-		if len(array_tags) == 0 {
+		if len(buffer2) == 0 {
 			// ptags being [] mean you won't get anything
 			err = fmt.Errorf("invalid #p tags")
 			return
 		}
-		conditions = append(conditions, fmt.Sprintf("ptags && ARRAY[%s]", strings.Join(array_tags, ",")))
+		buffer1 = append(buffer1, fmt.Sprintf("ptags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.Etags) > 0 {
-		array_tags := make([]string, 0, len(q.Etags))
 		for _, key := range q.Etags {
 			// prevent sql attack here!
 			parsed, e := hex.DecodeString(key)
 			if e != nil || len(parsed) != 32 {
 				continue
 			}
-			array_tags = append(array_tags, fmt.Sprintf("'%x'", parsed))
+			buffer2 = append(buffer2, fmt.Sprintf("'%x'", parsed))
 		}
-		if len(array_tags) == 0 {
+		if len(buffer2) == 0 {
 			err = fmt.Errorf("invalid #e tags")
 			return
 		}
-		conditions = append(conditions, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(array_tags, ",")))
+		buffer1 = append(buffer1, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.Gtags) > 0 {
-		array_tags := make([]string, 0, len(q.Gtags))
 		for _, key := range q.Gtags {
 			if strings.Contains(key, sql_dollar_quote) {
 				err = fmt.Errorf("SQL injection attack detected")
 				return
 			}
-			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
+			buffer2 = append(buffer2, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
 		}
-		if len(array_tags) == 0 {
+		if len(buffer2) == 0 {
 			err = fmt.Errorf("invalid query tags")
 			return
 		}
-		conditions = append(conditions, fmt.Sprintf("gtags && ARRAY[%s]", strings.Join(array_tags, ",")))
+		buffer1 = append(buffer1, fmt.Sprintf("gtags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.Dtags) > 0 {
-		array_tags := make([]string, 0, len(q.Dtags))
 		for _, key := range q.Dtags {
 			if strings.Contains(key, sql_dollar_quote) {
 				err = fmt.Errorf("SQL injection attack detected")
 				return
 			}
-			array_tags = append(array_tags, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
+			buffer2 = append(buffer2, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
 		}
-		if len(array_tags) == 0 {
+		if len(buffer2) == 0 {
 			err = fmt.Errorf("invalid query tags")
 			return
 		}
-		conditions = append(conditions, fmt.Sprintf("ARRAY[dtag] && ARRAY[%s]", strings.Join(array_tags, ",")))
+		buffer1 = append(buffer1, fmt.Sprintf("ARRAY[dtag] && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
 
+	buffer2 = buffer2[:0]
 	if len(q.Kinds) > 0 {
 		// no sql injection issues since these are ints
-		inkinds := make([]string, len(q.Kinds))
-		for i, kind := range q.Kinds {
-			inkinds[i] = strconv.Itoa(kind)
+		for _, kind := range q.Kinds {
+			buffer2 = append(buffer2, strconv.Itoa(kind))
 		}
-		conditions = append(conditions, `kind IN (`+strings.Join(inkinds, ",")+`)`)
+		buffer1 = append(buffer1, `kind IN (`+strings.Join(buffer2, ",")+`)`)
 	}
+
 	if q.Since != nil {
-		conditions = append(conditions, fmt.Sprintf("created_at > %d", *q.Since))
+		buffer1 = append(buffer1, fmt.Sprintf("created_at > %d", *q.Since))
 	}
 	if q.Until != nil {
-		conditions = append(conditions, fmt.Sprintf("created_at < %d", *q.Until))
+		buffer1 = append(buffer1, fmt.Sprintf("created_at < %d", *q.Until))
 	}
-	if len(conditions) == 0 {
+	if len(buffer1) == 0 {
 		// fallback
-		conditions = append(conditions, "true")
+		buffer1 = append(buffer1, "true")
 	}
-	return strings.Join(conditions, " AND "), nil
+	return strings.Join(buffer1, " AND "), nil
 }
 
 func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
