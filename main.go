@@ -26,7 +26,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-
 type EventSubmission struct {
 	event  nostr.Event
 	ctx    context.Context

@@ -7,8 +7,6 @@ import (
 	"github.com/gobwas/ws"
 )
 
-const nip11_info_document = "{\"contact\":\"barkyq\",\"description\":\"GNOST Relay\",\"name\":\"GNOST Relay\",\"pubkey\":\"\",\"software\":\"git+https://github.com/barkyq/gnost-relay\",\"supported_nips\":[1,2,4,9,11,12,15,16,20,22,28,33,42],\"version\":\"0.0\"}"
-
 func NIP11_bytes() ([]byte, error) {
 	bw := bytes.NewBuffer(nil)
 	if _, err := bw.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")); err != nil {
