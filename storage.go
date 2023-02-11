@@ -2,36 +2,58 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"sync"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"os"
 )
 
-func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn) error {
+func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn, string_buf_pool *sync.Pool) error {
 	b, err := json.Marshal(ev.event)
 	if err != nil {
 		return err
 	}
-	ptags := make([]string, 0)
-	etags := make([]string, 0)
-	gtags := make([]string, 0)
-	var dtag string
+	ptags := string_buf_pool.Get().([]string)
+	etags := string_buf_pool.Get().([]string)
+	gtags := string_buf_pool.Get().([]string)
+	defer string_buf_pool.Put(ptags)
+	defer string_buf_pool.Put(etags)
+	defer string_buf_pool.Put(gtags)
+
+	var dtag *string
+	var expiration *int64
 	for _, tag := range ev.event.Tags {
 		switch {
 		case tag[0] == "e":
-			etags = append(etags, tag[1])
+			if b, e := hex.DecodeString(tag[1]); e != nil || len(b) != 32 {
+				continue
+			} else {
+				etags = append(etags, fmt.Sprintf("%x", b))
+			}
 		case tag[0] == "p":
-			ptags = append(ptags, tag[1])
+			if b, e := hex.DecodeString(tag[1]); e != nil || len(b) != 32 {
+				continue
+			} else {
+				ptags = append(ptags, fmt.Sprintf("%x", b))
+			}
 		case tag[0] == "d":
-			dtag = tag[1]
+			dtag = &tag[1]
+		case tag[0] == "expiration":
+			if t, e := strconv.ParseInt(tag[1], 10, 64); e == nil {
+				expiration = &t
+			}
 		case len(tag[0]) == 1 && len(tag) > 0:
 			gtags = append(gtags, "#"+tag[0]+":"+tag[1])
 		}
 	}
-	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, gtags, raw)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, gtags, b)
+	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, expiration, gtags, raw)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, expiration, gtags, b)
 	if e != nil {
 		return e
 	}
@@ -52,6 +74,7 @@ CREATE TABLE IF NOT EXISTS db1 (
   etags text[],
   ptags text[],
   dtag text,
+  expiration integer,
   gtags text[],
   raw json
 );
@@ -63,6 +86,7 @@ CREATE INDEX IF NOT EXISTS db1_kindidx ON db1 (kind);
 CREATE INDEX IF NOT EXISTS db1_ptagsidx ON db1 USING gin (etags);
 CREATE INDEX IF NOT EXISTS db1_etagsidx ON db1 USING gin (ptags);
 CREATE INDEX IF NOT EXISTS db1_gtagsidx ON db1 USING gin (gtags);
+CREATE INDEX IF NOT EXISTS db1_expireidx ON db1 (expiration DESC);
 
 CREATE OR REPLACE FUNCTION delete_submission() RETURNS trigger AS $$
 BEGIN  
@@ -76,9 +100,18 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION ephemeral_submission() RETURNS trigger AS $$
-BEGIN  
-  IF int4range(20000,29999) @> NEW.kind THEN
+DECLARE 
+unixnow integer;
+BEGIN
+  IF int4range(20000,29999) @> NEW.kind OR (NEW.expiration is not null and NEW.expiration <= NEW.created_at) THEN
     PERFORM pg_notify('submissions',row_to_json(NEW)::text);
+    RETURN NULL;
+  END IF;
+  IF (NEW.expiration is null) THEN
+    RETURN NEW;
+  END IF;
+  SELECT extract(epoch from now())::integer INTO unixnow;
+  IF NEW.expiration <= unixnow THEN
     RETURN NULL;
   END IF;
   RETURN NEW;
@@ -89,8 +122,8 @@ CREATE OR REPLACE FUNCTION param_replaceable_submission() RETURNS trigger AS $$
 DECLARE 
 ca integer;
 BEGIN
-  IF int4range(30000,39999) @> NEW.kind THEN
-    SELECT created_at INTO ca FROM db1 WHERE kind=NEW.kind AND dtag=NEW.dtag AND pubkey=NEW.pubkey;
+  IF NEW.dtag is not null OR int4range(30000,39999) @> NEW.kind THEN
+    SELECT created_at INTO ca FROM db1 WHERE kind=NEW.kind AND dtag=NEW.dtag AND pubkey=NEW.pubkey ORDER BY created_at DESC;
     IF NOT FOUND OR NEW.created_at > ca THEN
       DELETE FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey AND dtag=NEW.dtag AND created_at <= NEW.created_at;
     ELSE

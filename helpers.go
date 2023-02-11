@@ -1,10 +1,9 @@
 package main
 
 import (
-
 	"encoding/hex"
 	"fmt"
-	"strconv"
+
 	"strings"
 	"sync"
 
@@ -36,29 +35,41 @@ type ParsedFilter struct {
 	Gtags   []string
 }
 
-const max_limit = 25
+type Query struct {
+	sql    string
+	params []any
+	pool   *sync.Pool
+}
 
-func SQL(filters []ParsedFilter, sql_dollar_quote string, pool *sync.Pool) (string, error) {
-	queries := pool.Get().([]string)
-	defer pool.Put(queries)
+func (q *Query) Release() {
+	q.pool.Put(q.params)
+}
+
+func SQL(filters []ParsedFilter, string_buf_pool *sync.Pool, any_buf_pool *sync.Pool) (*Query, error) {
+	queries := string_buf_pool.Get().([]string)
+	params := any_buf_pool.Get().([]any)
+	defer string_buf_pool.Put(queries)
 	queries = queries[:0]
+	params = params[:0]
 	var limit int
 	for _, q := range filters {
 		if q.Limit != nil && limit < *q.Limit {
 			limit = *q.Limit
 		}
-		if s, e := q.sql(sql_dollar_quote, pool); e != nil {
-			return "", e
+		if s, p, e := q.sql(params, string_buf_pool); e != nil {
+			return nil, e
 		} else {
+			params = p
 			queries = append(queries, "("+s+")")
 		}
 	}
 	if limit == 0 || limit > max_limit {
 		limit = max_limit
 	}
-	query := "SELECT raw FROM db1 WHERE " + strings.Join(queries, " OR ") + fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
-	
-	return query, nil
+	params = append(params, fmt.Sprintf("%d", limit))
+	sql := "SELECT raw FROM db1 WHERE " + strings.Join(queries, " OR ") + fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(params))
+
+	return &Query{sql, params, any_buf_pool}, nil
 }
 
 func (req *ReqSubmission) Cull(pf_buf []ParsedFilter) error {
@@ -77,12 +88,12 @@ func (req *ReqSubmission) Cull(pf_buf []ParsedFilter) error {
 	return nil
 }
 
-func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query string, err error) {
-	buffer1 := pool.Get().([]string)
-	buffer2 := pool.Get().([]string)
-	defer pool.Put(buffer1)
-	defer pool.Put(buffer2)
-
+func (q ParsedFilter) sql(params []any, string_buf_pool *sync.Pool) (string, []any, error) {
+	buffer1 := string_buf_pool.Get().([]string)
+	buffer2 := string_buf_pool.Get().([]string)
+	defer string_buf_pool.Put(buffer1)
+	defer string_buf_pool.Put(buffer2)
+	counter := len(params)
 	buffer1 = buffer1[:0]
 	buffer2 = buffer2[:0]
 	if len(q.Authors) > 0 {
@@ -95,13 +106,13 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 			if e != nil || len(parsed) > 32 {
 				continue
 			}
-
-			buffer2 = append(buffer2, fmt.Sprintf("pubkey LIKE '%x%%'", parsed))
+			counter++
+			params = append(params, fmt.Sprintf("%x%%", parsed))
+			buffer2 = append(buffer2, fmt.Sprintf("pubkey LIKE $%d", counter))
 		}
 		if len(buffer2) == 0 {
 			// authors being [] mean you won't get anything
-			err = fmt.Errorf("invalid authors field")
-			return
+			return "", nil, fmt.Errorf("invalid authors field")
 		}
 		buffer1 = append(buffer1, "("+strings.Join(buffer2, " OR ")+")")
 	}
@@ -117,12 +128,13 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 			if e != nil || len(parsed) > 32 {
 				continue
 			}
-			buffer2 = append(buffer2, fmt.Sprintf("id LIKE '%x%%'", parsed))
+			counter++
+			params = append(params, fmt.Sprintf("%x%%", parsed))
+			buffer2 = append(buffer2, fmt.Sprintf("id LIKE $%d", counter))
 		}
 		if len(buffer2) == 0 {
 			// ids being [] mean you won't get anything
-			err = fmt.Errorf("invalid ids field")
-			return
+			return "", nil, fmt.Errorf("invalid ids field")
 		}
 		buffer1 = append(buffer1, "("+strings.Join(buffer2, " OR ")+")")
 	}
@@ -135,12 +147,13 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 			if e != nil || len(parsed) != 32 {
 				continue
 			}
-			buffer2 = append(buffer2, fmt.Sprintf("'%x'", parsed))
+			counter++
+			buffer2 = append(buffer2, fmt.Sprintf("$%d", counter))
+			params = append(params, fmt.Sprintf("%x", parsed))
 		}
 		if len(buffer2) == 0 {
 			// ptags being [] mean you won't get anything
-			err = fmt.Errorf("invalid #p tags")
-			return
+			return "", nil, fmt.Errorf("invalid #p tags")
 		}
 		buffer1 = append(buffer1, fmt.Sprintf("ptags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
@@ -153,11 +166,12 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 			if e != nil || len(parsed) != 32 {
 				continue
 			}
-			buffer2 = append(buffer2, fmt.Sprintf("'%x'", parsed))
+			counter++
+			buffer2 = append(buffer2, fmt.Sprintf("$%d", counter))
+			params = append(params, fmt.Sprintf("%x", parsed))
 		}
 		if len(buffer2) == 0 {
-			err = fmt.Errorf("invalid #e tags")
-			return
+			return "", nil, fmt.Errorf("invalid #e tags")
 		}
 		buffer1 = append(buffer1, fmt.Sprintf("etags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
@@ -165,15 +179,9 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 	buffer2 = buffer2[:0]
 	if len(q.Gtags) > 0 {
 		for _, key := range q.Gtags {
-			if strings.Contains(key, sql_dollar_quote) {
-				err = fmt.Errorf("SQL injection attack detected")
-				return
-			}
-			buffer2 = append(buffer2, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
-		}
-		if len(buffer2) == 0 {
-			err = fmt.Errorf("invalid query tags")
-			return
+			counter++
+			params = append(params, key)
+			buffer2 = append(buffer2, fmt.Sprintf("$%d", counter))
 		}
 		buffer1 = append(buffer1, fmt.Sprintf("gtags && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
@@ -181,15 +189,9 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 	buffer2 = buffer2[:0]
 	if len(q.Dtags) > 0 {
 		for _, key := range q.Dtags {
-			if strings.Contains(key, sql_dollar_quote) {
-				err = fmt.Errorf("SQL injection attack detected")
-				return
-			}
-			buffer2 = append(buffer2, fmt.Sprintf("$%s$%s$%s$", sql_dollar_quote, key, sql_dollar_quote))
-		}
-		if len(buffer2) == 0 {
-			err = fmt.Errorf("invalid query tags")
-			return
+			counter++
+			params = append(params, key)
+			buffer2 = append(buffer2, fmt.Sprintf("$%d", counter))
 		}
 		buffer1 = append(buffer1, fmt.Sprintf("ARRAY[dtag] && ARRAY[%s]", strings.Join(buffer2, ",")))
 	}
@@ -198,22 +200,28 @@ func (q ParsedFilter) sql(sql_dollar_quote string, pool *sync.Pool) (query strin
 	if len(q.Kinds) > 0 {
 		// no sql injection issues since these are ints
 		for _, kind := range q.Kinds {
-			buffer2 = append(buffer2, strconv.Itoa(kind))
+			counter++
+			params = append(params, kind)
+			buffer2 = append(buffer2, fmt.Sprintf("$%d", counter))
 		}
 		buffer1 = append(buffer1, `kind IN (`+strings.Join(buffer2, ",")+`)`)
 	}
 
 	if q.Since != nil {
-		buffer1 = append(buffer1, fmt.Sprintf("created_at > %d", *q.Since))
+		counter++
+		params = append(params, *q.Since)
+		buffer1 = append(buffer1, fmt.Sprintf("created_at > $%d", counter))
 	}
 	if q.Until != nil {
-		buffer1 = append(buffer1, fmt.Sprintf("created_at < %d", *q.Until))
+		counter++
+		params = append(params, *q.Until)
+		buffer1 = append(buffer1, fmt.Sprintf("created_at < $%d", counter))
 	}
 	if len(buffer1) == 0 {
 		// fallback
 		buffer1 = append(buffer1, "true")
 	}
-	return strings.Join(buffer1, " AND "), nil
+	return strings.Join(buffer1, " AND "), params, nil
 }
 
 func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {

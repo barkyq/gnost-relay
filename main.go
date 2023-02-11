@@ -26,11 +26,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const RBS = 1024
-const subid_max_length = 20
-const websocket_rate_limit rate.Limit = 0.5 // number of payloads (EVENT, REQ, CLOSE) per second
-const websocket_burst = 4
-const relay_url = "localhost"
 
 type EventSubmission struct {
 	event  nostr.Event
@@ -44,7 +39,7 @@ type ReqSubmission struct {
 	filters []ParsedFilter
 	ctx     context.Context
 	writer  io.Writer
-	query   string
+	query   *Query
 	cancel  context.CancelFunc
 }
 type CloseSubmission struct {
@@ -61,32 +56,14 @@ func main() {
 	}
 
 	// initialize the pools
-	var bytes_buf_pool = sync.Pool{
-		New: func() any {
-			fmt.Println("new bytes buf!")
-			return new(bytes.Buffer)
-		},
-	}
-	var mask_buf_pool = sync.Pool{
-		New: func() any {
-			fmt.Println("new mask buf!")
-			return make([]byte, RBS)
-		},
-	}
-	var json_msg_pool = sync.Pool{
-		New: func() any {
-			fmt.Println("new json msg!")
-			return make([]json.RawMessage, 0)
-		},
-	}
-	var string_buf_pool = sync.Pool{
-		New: func() any {
-			fmt.Println("new string buf!")
-			return make([]string, 0)
-		},
-	}
+	var bytes_buf_pool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	var mask_buf_pool = sync.Pool{New: func() any { return make([]byte, read_buffer_size) }}
+	var json_msg_pool = sync.Pool{New: func() any { return make([]json.RawMessage, 0) }}
+	var string_buf_pool = sync.Pool{New: func() any { return make([]string, 0) }}
+	var any_buf_pool = sync.Pool{New: func() any { return make([]any, 0) }}
 
-	// NIP_11_bytes. Read Only so don't need Mutex
+	// NIP_11_bytes.
+	// Readonly so don't need Mutex
 	nip_11_bytes, err := NIP11_bytes()
 	if err != nil {
 		panic(err)
@@ -109,18 +86,13 @@ func main() {
 	close_chan := make(chan CloseSubmission, 64)
 
 	// start handlers
-	go EventSubmissionHandler(event_chan, dbpool)
+	go EventSubmissionHandler(event_chan, dbpool, &string_buf_pool)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool)
 
 	// nip11 hijacker / websocket upgrader
 	upgrader := ws.Upgrader{
 		OnHeader: NIP11_hijack_header,
 	}
-
-	// random string to prevent SQL injections
-	var b [32]byte
-	rand.New(rand.NewSource(time.Now().UnixNano() + int64(os.Getpid()))).Read(b[:])
-	sql_dollar_quote := gen_sql_dollar_quote(b)
 
 	for {
 		conn, err := ln.Accept()
@@ -150,6 +122,7 @@ func main() {
 					break
 				}
 			}
+
 			// allocate stuff for websocket connection
 			ctx, cancel := context.WithCancel(context.Background())
 			payload := bytes_buf_pool.Get().(*bytes.Buffer)
@@ -209,7 +182,7 @@ func main() {
 				// get a mask_buf buffer. the mask changes per frame
 				for remaining > 0 {
 					var n int
-					if remaining > RBS {
+					if remaining > read_buffer_size {
 						n, _ = conn.Read(mask_buf[:])
 					} else {
 						n, _ = conn.Read(mask_buf[:remaining])
@@ -264,7 +237,7 @@ func main() {
 					continue
 				}
 				switch {
-				case json_msg[0][1] == 'A':
+				case json_msg[0][1] == 'A': // AUTH
 					ev := nostr.Event{}
 					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid AUTH\"]"))
@@ -289,7 +262,7 @@ func main() {
 						}
 						// End of block acts as break. Will hit the rate limiter
 					}
-				case json_msg[0][1] == 'E':
+				case json_msg[0][1] == 'E': // EVENT
 					ev := nostr.Event{}
 					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid EVENT\"]"))
@@ -307,7 +280,7 @@ func main() {
 						writer: conn,
 						cancel: cancel,
 					}
-				case json_msg[0][1] == 'R':
+				case json_msg[0][1] == 'R': // REQ
 					filters := make([]ParsedFilter, 0)
 					var id string
 					if len(json_msg) < 3 {
@@ -380,8 +353,8 @@ func main() {
 						break
 					}
 					// generate the query
-					// use string buf pool to optimize memory allocations
-					query, e := SQL(filters, sql_dollar_quote, &string_buf_pool)
+					// use buffer pools to optimize memory allocations
+					query, e := SQL(filters, &string_buf_pool, &any_buf_pool)
 					if e != nil {
 						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"SQL Query Error: %s\"]", e.Error())))
 						if e = ws.WriteFrame(conn, frame); e != nil {
@@ -389,6 +362,7 @@ func main() {
 						}
 						break
 					}
+					fmt.Println(query.sql, query.params)
 					req_chan <- ReqSubmission{
 						addr:    conn.RemoteAddr().String(),
 						id:      id,
@@ -398,7 +372,7 @@ func main() {
 						cancel:  cancel,
 						query:   query,
 					}
-				case json_msg[0][1] == 'C':
+				case json_msg[0][1] == 'C': // CLOSE
 					var id string
 					var invalid bool
 					if len(json_msg) < 2 {
@@ -432,20 +406,27 @@ func main() {
 	}
 }
 
-func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool) {
+func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool, string_buf_pool *sync.Pool) {
 	limiter := rate.NewLimiter(25, 5)
 	dbconn, e := dbpool.Acquire(context.Background())
+	ticker := time.NewTicker(delete_expired_events_period)
 	if e != nil {
 		panic(e)
 	}
 	for {
-		ev := <-event_chan
-		if e := limiter.Wait(ev.ctx); e == nil {
-			if e := ev.StoreEvent(dbconn); e != nil {
+		select {
+		case <-ticker.C:
+			if _, e := dbconn.Exec(context.Background(), "DELETE FROM db1 WHERE expiration is not null and expiration < $1", time.Now().Unix()); e != nil {
 				panic(e)
 			}
-			if e := ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID)))); e != nil {
-				ev.cancel()
+		case ev := <-event_chan:
+			if e := limiter.Wait(ev.ctx); e == nil {
+				if e := ev.StoreEvent(dbconn, string_buf_pool); e != nil {
+					panic(e)
+				}
+				if e := ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID)))); e != nil {
+					ev.cancel()
+				}
 			}
 		}
 	}
@@ -517,8 +498,8 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				}
 				func() {
 					defer dbconn.Release()
-
-					rows, e := dbconn.Query(req.ctx, req.query)
+					defer req.query.Release()
+					rows, e := dbconn.Query(req.ctx, req.query.sql, req.query.params...)
 					if e != nil {
 						panic(e)
 					}
