@@ -1,5 +1,7 @@
 github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8 h1:Xa6tp8DPDhdV+k23uiTC/GrAYOe4IdyJVKtob4KW3GA=
 github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8/go.mod h1:ihkm1viTbO/LOsgdGoFPBSvzqvx7ibvkMzYp3CgtHik=
+github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717 h1:I/WR3qUOOY5HZXWXXuRcMt6siLul9hezZSrH/xUscIk=
+github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717/go.mod h1:qFFTIxh15H5GGN0WsBI/P73DteqsevnhSEW/yk8nEf4=
 github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f h1:8FqDMCE/2i7sRBIhs98B+4e7TFzsnN3+9HUL2GrDuBY=
 github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f/go.mod h1:nzvNcVha5eUziGrbxFCo6qFIojQHjJV5cLYIbezhfL0=
 github.com/btcsuite/btcd/btcec/v2 v2.2.0 h1:fzn1qaOt32TuLjFlkzYSsBC35Q3KUjT1SwPxiMSCF5k=
@@ -26,8 +28,6 @@ github.com/jackc/pgx/v5 v5.2.0 h1:NdPpngX0Y6z6XDFKqmFQaE+bCtkqzvQIOt1wvBlAqs8=
 github.com/jackc/pgx/v5 v5.2.0/go.mod h1:Ptn7zmohNsWEsdxRawMzk3gaKma2obW+NWTnKa0S4nk=
 github.com/jackc/puddle/v2 v2.1.2 h1:0f7vaaXINONKTsxYDn4otOAiJanX/BMeAtY//BXqzlg=
 github.com/jackc/puddle/v2 v2.1.2/go.mod h1:2lpufsF5mRHO6SuZkm0fNYxM6SWHfvyFj62KwNzgels=
-github.com/nbd-wtf/go-nostr v0.13.0 h1:3OcUknuSLm8prTk2u/kUvbMQYtaSjLKemADRQ8TBIXk=
-github.com/nbd-wtf/go-nostr v0.13.0/go.mod h1:qFFTIxh15H5GGN0WsBI/P73DteqsevnhSEW/yk8nEf4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

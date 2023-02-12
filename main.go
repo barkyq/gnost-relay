@@ -21,16 +21,18 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip26"
 	"github.com/nbd-wtf/go-nostr/nip42"
 
 	"golang.org/x/time/rate"
 )
 
 type EventSubmission struct {
-	event  nostr.Event
-	ctx    context.Context
-	writer io.Writer
-	cancel context.CancelFunc
+	event       *nostr.Event
+	return_pool *sync.Pool // for returning the event pointer
+	ctx         context.Context
+	writer      io.Writer
+	cancel      context.CancelFunc
 }
 type ReqSubmission struct {
 	addr    string
@@ -60,6 +62,7 @@ func main() {
 	var json_msg_pool = sync.Pool{New: func() any { return make([]json.RawMessage, 0) }}
 	var string_buf_pool = sync.Pool{New: func() any { return make([]string, 0) }}
 	var any_buf_pool = sync.Pool{New: func() any { return make([]any, 0) }}
+	var event_pool = sync.Pool{New: func() any { return new(nostr.Event) }}
 
 	// NIP_11_bytes.
 	// Readonly so don't need Mutex
@@ -85,7 +88,7 @@ func main() {
 	close_chan := make(chan CloseSubmission, 64)
 
 	// start handlers
-	go EventSubmissionHandler(event_chan, dbpool, &string_buf_pool)
+	go EventSubmissionHandler(event_chan, dbpool)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool)
 
 	// nip11 hijacker / websocket upgrader
@@ -166,13 +169,9 @@ func main() {
 				}
 				// reset payload or control buffer
 				if (header.OpCode != ws.OpContinuation) && header.OpCode.IsData() {
-					if payload.Len() != 0 {
-						payload.Reset()
-					}
+					payload.Reset()
 				} else if header.OpCode.IsControl() {
-					if control.Len() != 0 {
-						control.Reset()
-					}
+					control.Reset()
 				}
 				remaining := header.Length
 
@@ -180,9 +179,12 @@ func main() {
 				for remaining > 0 {
 					var n int
 					if remaining > read_buffer_size {
-						n, _ = conn.Read(mask_buf[:])
+						n, err = conn.Read(mask_buf[:])
 					} else {
-						n, _ = conn.Read(mask_buf[:remaining])
+						n, err = conn.Read(mask_buf[:remaining])
+					}
+					if err != nil {
+						panic(err)
 					}
 					remaining -= int64(n)
 					if header.Masked {
@@ -226,7 +228,6 @@ func main() {
 					continue
 				}
 
-				//Handle Payload
 				if err := json.NewDecoder(payload).Decode(&json_msg); err != nil {
 					notice := "[\"NOTICE\",\"Invalid Message\"]"
 					frame := ws.NewTextFrame([]byte(fmt.Sprintf(notice, json_msg[1])))
@@ -235,8 +236,9 @@ func main() {
 				}
 				switch {
 				case json_msg[0][1] == 'A': // AUTH
-					ev := nostr.Event{}
-					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
+					ev := event_pool.Get().(*nostr.Event)
+					if err := json.Unmarshal(json_msg[1], ev); err != nil {
+						event_pool.Put(ev)
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid AUTH\"]"))
 						if err = ws.WriteFrame(conn, frame); err != nil {
 							return
@@ -244,7 +246,8 @@ func main() {
 						// break hits the rate limiter
 						break
 					}
-					if pub, ok := nip42.ValidateAuthEvent(&ev, websocket_id, relay_url); ok == true {
+					if pub, ok := nip42.ValidateAuthEvent(ev, websocket_id, relay_url); ok == true {
+						event_pool.Put(ev)
 						authenticated_user = pub
 						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"NOTICE\",\"Authenticated as %s\"]", pub)))
 						if err := ws.WriteFrame(conn, frame); err != nil {
@@ -253,6 +256,7 @@ func main() {
 						// continue skips the rate limiter
 						continue
 					} else {
+						event_pool.Put(ev)
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Authentication failed!\"]"))
 						if err := ws.WriteFrame(conn, frame); err != nil {
 							return
@@ -260,22 +264,25 @@ func main() {
 						// End of block acts as break. Will hit the rate limiter
 					}
 				case json_msg[0][1] == 'E': // EVENT
-					ev := nostr.Event{}
+					ev := event_pool.Get().(*nostr.Event)
 					if err := json.Unmarshal(json_msg[1], &ev); err != nil {
+						event_pool.Put(ev)
 						frame := ws.NewTextFrame([]byte("[\"NOTICE\",\"Invalid EVENT\"]"))
 						ws.WriteFrame(conn, frame)
 						break
 					}
 					if b, e := ev.CheckSignature(); e != nil || b != true {
+						event_pool.Put(ev)
 						frame := ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",false,\"\"]", ev.ID)))
 						ws.WriteFrame(conn, frame)
 						break
 					}
 					event_chan <- EventSubmission{
-						event:  ev,
-						ctx:    ctx,
-						writer: conn,
-						cancel: cancel,
+						event:       ev,
+						return_pool: &event_pool,
+						ctx:         ctx,
+						writer:      conn,
+						cancel:      cancel,
 					}
 				case json_msg[0][1] == 'R': // REQ
 					filters := make([]ParsedFilter, 0)
@@ -359,7 +366,7 @@ func main() {
 						}
 						break
 					}
-					fmt.Println(query.sql, query.params)
+					// fmt.Println(query.sql, query.params)
 					req_chan <- ReqSubmission{
 						addr:    conn.RemoteAddr().String(),
 						id:      id,
@@ -403,13 +410,20 @@ func main() {
 	}
 }
 
-func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool, string_buf_pool *sync.Pool) {
+func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool) {
 	limiter := rate.NewLimiter(25, 5)
 	dbconn, e := dbpool.Acquire(context.Background())
-	ticker := time.NewTicker(delete_expired_events_period)
 	if e != nil {
 		panic(e)
 	}
+	ticker := time.NewTicker(delete_expired_events_period)
+
+	delegation_token := new(nip26.DelegationToken)
+	jsonbuf := bytes.NewBuffer(nil)
+	ptags := make([]string, 0)
+	etags := make([]string, 0)
+	gtags := make([]string, 0)
+
 	for {
 		select {
 		case <-ticker.C:
@@ -418,10 +432,11 @@ func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Poo
 			}
 		case ev := <-event_chan:
 			if e := limiter.Wait(ev.ctx); e == nil {
-				if e := ev.StoreEvent(dbconn, string_buf_pool); e != nil {
-					panic(e)
-				}
-				if e := ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID)))); e != nil {
+				if e := ev.store_event(dbconn, ptags, etags, gtags, delegation_token, jsonbuf); e != nil {
+					if e := ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",false,\"event not accepted into database\"]", ev.event.ID)))); e != nil {
+						ev.cancel()
+					}
+				} else if e = ws.WriteFrame(ev.writer, ws.NewTextFrame([]byte(fmt.Sprintf("[\"OK\",\"%s\",true,\"\"]", ev.event.ID)))); e != nil {
 					ev.cancel()
 				}
 			}
@@ -430,10 +445,9 @@ func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Poo
 }
 
 func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubmission, dbpool *pgxpool.Pool) {
-	// rate limiter for receiving req
-	limiter := rate.NewLimiter(25, 5)
 	// mutex for the subids map
 	var mu sync.Mutex
+
 	subids := make(map[string]ReqSubmission)
 
 	// handler for events newly added to DB.
@@ -488,53 +502,60 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 	for {
 		select {
 		case req := <-req_chan:
-			if e := limiter.Wait(req.ctx); e == nil {
-				dbconn, e := dbpool.Acquire(req.ctx)
-				if e != nil {
+			dbconn, e := dbpool.Acquire(req.ctx)
+			if e != nil {
+				select {
+				case <-req.ctx.Done():
+					continue
+				default:
 					panic(e)
 				}
-				func() {
-					defer dbconn.Release()
-					defer req.query.Release()
-					rows, e := dbconn.Query(req.ctx, req.query.sql, req.query.params...)
-					if e != nil {
+			}
+			func() {
+				defer dbconn.Release()
+				defer req.query.Release()
+				rows, e := dbconn.Query(req.ctx, req.query.sql, req.query.params...)
+				if e != nil {
+					select {
+					case <-req.ctx.Done():
+						return
+					default:
 						panic(e)
 					}
-					for rows.Next() {
-						if req.ctx.Err() != nil {
-							return
-						}
-						buf.Reset()
-						buf.Write([]byte(fmt.Sprintf("[\"EVENT\",\"%s\",", req.id)))
-						if err := rows.Scan(raw); err != nil || raw == nil {
-							panic(err)
-						}
-						buf.Write(*raw)
-						buf.WriteByte(']')
-						if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
-							req.cancel()
-							return
-						}
+				}
+				for rows.Next() {
+					if req.ctx.Err() != nil {
+						return
 					}
 					buf.Reset()
-					buf.Write([]byte(fmt.Sprintf("[\"EOSE\",\"%s\"]", req.id)))
+					buf.Write([]byte(fmt.Sprintf("[\"EVENT\",\"%s\",", req.id)))
+					if err := rows.Scan(raw); err != nil || raw == nil {
+						panic(err)
+					}
+					buf.Write(*raw)
+					buf.WriteByte(']')
 					if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
 						req.cancel()
 						return
 					}
-					uid := req.addr + "/" + req.id
-					if err := req.Cull(pf_buf); err != nil {
-						fmt.Println(uid, "culled!")
-						return
-					}
-					fmt.Println(uid, "added!")
-					mu.Lock()
-					subids[uid] = req
-					mu.Unlock()
-				}()
-			}
+				}
+				buf.Reset()
+				buf.Write([]byte(fmt.Sprintf("[\"EOSE\",\"%s\"]", req.id)))
+				if err := ws.WriteFrame(req.writer, ws.NewTextFrame(buf.Bytes())); err != nil {
+					req.cancel()
+					return
+				}
+				uid := req.addr + "/" + req.id
+				if err := req.Cull(pf_buf); err != nil {
+					fmt.Println(uid, "culled!")
+					return
+				}
+				// fmt.Println(uid, "added!")
+				mu.Lock()
+				subids[uid] = req
+				mu.Unlock()
+			}()
 		case close := <-close_chan:
-			limiter.Wait(close.ctx)
 			if len(close.id) > subid_max_length {
 				continue
 			}

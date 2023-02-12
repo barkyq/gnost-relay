@@ -12,6 +12,8 @@ require (
 
 replace github.com/gobwas/ws => github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f
 
+replace github.com/nbd-wtf/go-nostr => github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717
+
 require (
 	github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect

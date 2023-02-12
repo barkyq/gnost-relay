@@ -1,29 +1,39 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nbd-wtf/go-nostr/nip26"
 
 	"os"
 )
 
-func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn, string_buf_pool *sync.Pool) error {
-	b, err := json.Marshal(ev.event)
-	if err != nil {
+func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn) error {
+	delegation_token := new(nip26.DelegationToken)
+	jsonbuf := bytes.NewBuffer(nil)
+	ptags, etags, gtags := make([]string, 0), make([]string, 0), make([]string, 0)
+	return ev.store_event(dbconn, ptags, etags, gtags, delegation_token, jsonbuf)
+}
+
+// unexported. more efficient by reusing memory allocations
+func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, etags []string, gtags []string, delegation_token *nip26.DelegationToken, jsonbuf *bytes.Buffer) error {
+	defer ev.return_pool.Put(ev.event)
+	jsonbuf.Reset()
+	enc := json.NewEncoder(jsonbuf)
+	// turn off stupid go json encoding automatically doing HTML escaping...
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(ev.event); err != nil {
 		return err
 	}
-	ptags := string_buf_pool.Get().([]string)
-	etags := string_buf_pool.Get().([]string)
-	gtags := string_buf_pool.Get().([]string)
-	defer string_buf_pool.Put(ptags)
-	defer string_buf_pool.Put(etags)
-	defer string_buf_pool.Put(gtags)
+	ptags = ptags[:0]
+	etags = etags[:0]
+	gtags = gtags[:0]
 
 	var dtag *string
 	var expiration *int64
@@ -43,6 +53,11 @@ func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn, string_buf_pool *syn
 			}
 		case tag[0] == "d":
 			dtag = &tag[1]
+		case tag[0] == "delegation":
+			fmt.Println(tag[2])
+			if _, err := delegation_token.Parse(ev.event); err == nil {
+				ev.event.PubKey = delegation_token.Tag()[1]
+			}
 		case tag[0] == "expiration":
 			if t, e := strconv.ParseInt(tag[1], 10, 64); e == nil {
 				expiration = &t
@@ -53,7 +68,7 @@ func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn, string_buf_pool *syn
 	}
 	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, expiration, gtags, raw)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, expiration, gtags, b)
+		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, expiration, gtags, jsonbuf.Bytes())
 	if e != nil {
 		return e
 	}
@@ -117,8 +132,8 @@ BEGIN
     RETURN NEW;
   END IF;
   SELECT extract(epoch from now())::integer INTO unixnow;
-  IF NEW.expiration <= unixnow THEN
-    RETURN NULL;
+  IF NEW.expiration < unixnow THEN
+    RAISE EXCEPTION 'expired event';
   END IF;
   RETURN NEW;
 END;
@@ -149,11 +164,13 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS delete_trigger ON db1;
 DROP TRIGGER IF EXISTS ephemeral_trigger ON db1;
+DROP TRIGGER IF EXISTS expiration_trigger ON db1;
 DROP TRIGGER IF EXISTS param_replaceable_trigger ON db1;
 DROP TRIGGER IF EXISTS submission_trigger ON db1;
 
 CREATE TRIGGER delete_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION delete_submission();
 CREATE TRIGGER ephemeral_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION ephemeral_submission();
+CREATE TRIGGER expiration_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION expiration_submission();
 CREATE TRIGGER param_replaceable_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION param_replaceable_submission();
 CREATE TRIGGER submission_trigger AFTER INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION notify_submission();
 `)
