@@ -100,13 +100,19 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION ephemeral_submission() RETURNS trigger AS $$
-DECLARE 
-unixnow integer;
 BEGIN
-  IF int4range(20000,29999) @> NEW.kind OR (NEW.expiration is not null and NEW.expiration <= NEW.created_at) THEN
+  IF int4range(20000,29999) @> NEW.kind THEN
     PERFORM pg_notify('submissions',row_to_json(NEW)::text);
     RETURN NULL;
   END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION expiration_submission() RETURNS trigger AS $$
+DECLARE
+unixnow integer;
+BEGIN
   IF (NEW.expiration is null) THEN
     RETURN NEW;
   END IF;
@@ -119,29 +125,13 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION param_replaceable_submission() RETURNS trigger AS $$
-DECLARE 
+DECLARE
 ca integer;
 BEGIN
-  IF NEW.dtag is not null OR int4range(30000,39999) @> NEW.kind THEN
+  IF NEW.dtag is not null OR int4range(30000,39999) @> NEW.kind OR int4range(10000,19999) @> NEW.kind OR NEW.kind in (0,3,41) THEN
     SELECT created_at INTO ca FROM db1 WHERE kind=NEW.kind AND dtag=NEW.dtag AND pubkey=NEW.pubkey ORDER BY created_at DESC;
     IF NOT FOUND OR NEW.created_at > ca THEN
       DELETE FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey AND dtag=NEW.dtag AND created_at <= NEW.created_at;
-    ELSE
-      RETURN NULL;
-    END IF;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION replaceable_submission() RETURNS trigger AS $$
-DECLARE 
-ca integer;
-BEGIN  
-  IF int4range(10000,19999) @> NEW.kind OR NEW.kind in (0,2,3,41) THEN
-    SELECT created_at INTO ca FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey;
-    IF NOT FOUND OR NEW.created_at > ca THEN
-      DELETE FROM db1 WHERE kind=NEW.kind AND pubkey=NEW.pubkey AND created_at <= NEW.created_at;
     ELSE
       RETURN NULL;
     END IF;
@@ -160,13 +150,11 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS delete_trigger ON db1;
 DROP TRIGGER IF EXISTS ephemeral_trigger ON db1;
 DROP TRIGGER IF EXISTS param_replaceable_trigger ON db1;
-DROP TRIGGER IF EXISTS replaceable_trigger ON db1;
 DROP TRIGGER IF EXISTS submission_trigger ON db1;
 
 CREATE TRIGGER delete_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION delete_submission();
 CREATE TRIGGER ephemeral_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION ephemeral_submission();
 CREATE TRIGGER param_replaceable_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION param_replaceable_submission();
-CREATE TRIGGER replaceable_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION replaceable_submission();
 CREATE TRIGGER submission_trigger AFTER INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION notify_submission();
 `)
 	return dbpool, err

@@ -89,9 +89,7 @@ func main() {
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool)
 
 	// nip11 hijacker / websocket upgrader
-	upgrader := ws.Upgrader{
-		OnHeader: NIP11_hijack_header,
-	}
+	upgrader := ws.Upgrader{OnHeader: NIP11_hijack_header}
 
 	for {
 		conn, err := ln.Accept()
