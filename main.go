@@ -366,7 +366,6 @@ func main() {
 						}
 						break
 					}
-					// fmt.Println(query.sql, query.params)
 					req_chan <- ReqSubmission{
 						addr:    conn.RemoteAddr().String(),
 						id:      id,
@@ -550,7 +549,6 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 					fmt.Println(uid, "culled!")
 					return
 				}
-				// fmt.Println(uid, "added!")
 				mu.Lock()
 				subids[uid] = req
 				mu.Unlock()

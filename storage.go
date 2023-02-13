@@ -54,7 +54,6 @@ func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, eta
 		case tag[0] == "d":
 			dtag = &tag[1]
 		case tag[0] == "delegation":
-			fmt.Println(tag[2])
 			if _, err := delegation_token.Parse(ev.event); err == nil {
 				ev.event.PubKey = delegation_token.Tag()[1]
 			}
