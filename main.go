@@ -3,28 +3,26 @@ package main
 import (
 	"bytes"
 	"context"
-	"math/rand"
-	"os"
-	"time"
-
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
-
+	"os"
 	"sync"
 	"syscall"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/gobwas/ws"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip26"
 	"github.com/nbd-wtf/go-nostr/nip42"
-
-	"golang.org/x/time/rate"
 )
 
 type EventSubmission struct {
@@ -167,15 +165,16 @@ func main() {
 					fmt.Println("unknown error", conn.RemoteAddr(), err.Error())
 					return
 				}
+
 				// reset payload or control buffer
 				if (header.OpCode != ws.OpContinuation) && header.OpCode.IsData() {
 					payload.Reset()
 				} else if header.OpCode.IsControl() {
 					control.Reset()
 				}
-				remaining := header.Length
 
-				// get a mask_buf buffer. the mask changes per frame
+				// unmask the frame payload
+				remaining := header.Length
 				for remaining > 0 {
 					var n int
 					if remaining > read_buffer_size {
@@ -190,7 +189,7 @@ func main() {
 					if header.Masked {
 						ws.Cipher(mask_buf[:n], header.Mask, 0)
 					}
-					// control frames can be injected
+
 					switch {
 					case header.OpCode.IsControl():
 						control.Write(mask_buf[:n])
@@ -209,7 +208,7 @@ func main() {
 					switch header.OpCode {
 					case ws.OpClose:
 						var b [2]byte // status code
-						io.ReadFull(control, b[:])
+						control.Read(b[:])
 						code := ws.StatusCode(uint16(b[0])*256 + uint16(b[1]))
 						var frame ws.Frame
 						if code.IsProtocolDefined() {
@@ -221,19 +220,20 @@ func main() {
 						fmt.Println("connection closed 0", conn.RemoteAddr())
 						return
 					case ws.OpPing:
-						ctrl_bytes, _ := io.ReadAll(control)
-						frame := ws.NewPongFrame(ctrl_bytes)
+						frame := ws.NewPongFrame(control.Bytes())
 						ws.WriteFrame(conn, frame)
 					}
 					continue
 				}
 
+				// Handle Payload
 				if err := json.NewDecoder(payload).Decode(&json_msg); err != nil {
 					notice := "[\"NOTICE\",\"Invalid Message\"]"
 					frame := ws.NewTextFrame([]byte(fmt.Sprintf(notice, json_msg[1])))
 					ws.WriteFrame(conn, frame)
 					continue
 				}
+				// AUTH, EVENT, REQ, CLOSE
 				switch {
 				case json_msg[0][1] == 'A': // AUTH
 					ev := event_pool.Get().(*nostr.Event)
@@ -446,7 +446,6 @@ func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Poo
 func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubmission, dbpool *pgxpool.Pool) {
 	// mutex for the subids map
 	var mu sync.Mutex
-
 	subids := make(map[string]ReqSubmission)
 
 	// handler for events newly added to DB.
@@ -494,7 +493,6 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 	}()
 
 	// handler for incoming reqs.
-	// allocations:
 	buf := bytes.NewBuffer(nil)
 	pf_buf := make([]ParsedFilter, 0)
 	raw := new(json.RawMessage)
