@@ -56,6 +56,7 @@ func main() {
 
 	// initialize the pools
 	var bytes_buf_pool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	const read_buffer_size = 1024
 	var mask_buf_pool = sync.Pool{New: func() any { return make([]byte, read_buffer_size) }}
 	var json_msg_pool = sync.Pool{New: func() any { return make([]json.RawMessage, 0) }}
 	var string_buf_pool = sync.Pool{New: func() any { return make([]string, 0) }}
