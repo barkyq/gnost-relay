@@ -47,6 +47,12 @@ type CloseSubmission struct {
 }
 
 func main() {
+	// initialize configuration
+	c, err := InitConfig("config.json")
+	if err != nil {
+		panic(err)
+	}
+
 	// initilize db
 	dbpool, err := InitStorage()
 	if err != nil {
@@ -73,13 +79,6 @@ func main() {
 		return flate.NewReader(dummy)
 	}}
 
-	// NIP_11_bytes.
-	// Readonly so don't need Mutex
-	nip_11_bytes, gzip_nip_11_bytes, err := NIP11_gzip_bytes()
-	if err != nil {
-		panic(err)
-	}
-
 	// for generating NIP-42 AUTH challenges
 	// rand_reader is not safe for concurrent use
 	var challenge_bytes [16]byte
@@ -100,7 +99,7 @@ func main() {
 	logger := log.Default()
 
 	// start handlers
-	go EventSubmissionHandler(event_chan, dbpool, logger)
+	go EventSubmissionHandler(event_chan, dbpool, logger, c)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool, logger)
 
 	for {
@@ -120,6 +119,9 @@ func main() {
 				if hs, err := upgrader.Upgrade(conn); err != nil {
 					// error in upgrade. check if hijacked.
 					if _, ok := err.(*nip11_escape); ok == true {
+						doc := c.NIP11()
+						nip_11_bytes, gzip_nip_11_bytes := doc.document, doc.gzip_document
+						c.Done()
 						switch encoding {
 						case [4]byte{'g', 'z', 'i', 'p'}:
 							conn.Write(gzip_nip_11_bytes)
@@ -142,7 +144,9 @@ func main() {
 
 			// allocate stuff for websocket connection
 			ctx, cancel := context.WithCancel(context.Background())
-			limiter := rate.NewLimiter(websocket_rate_limit, websocket_burst)
+			s := c.Settings()
+			limiter := rate.NewLimiter(s.websocket_rate_limit, s.websocket_burst)
+			c.Done()
 			defer cancel()
 
 			// generate websocket_id
@@ -163,17 +167,22 @@ func main() {
 			}
 
 			// post upgrade handler
+			var relay_url string
+			var subid_max_length, max_limit int
 			for {
 				// AUTH, EVENT, REQ, CLOSE
 				msg := <-msgs
 				if len(msg.jmsg) < 2 {
 					msg.Release()
-					if e := limiter.WaitN(ctx, websocket_burst); e != nil {
+					if e := limiter.Wait(ctx); e != nil {
 						logger.Println("connection closed", conn.RemoteAddr())
 						return
 					}
 					continue
 				}
+				s := c.Settings()
+				relay_url, subid_max_length, max_limit = s.relay_url, s.subid_max_length, s.max_limit
+				c.Done()
 				switch {
 				case msg.jmsg[0][1] == 'A': // AUTH
 					ev := event_pool.Get().(*nostr.Event)
@@ -313,7 +322,7 @@ func main() {
 					}
 					// generate the query
 					// use buffer pools to optimize memory allocations
-					query, err := SQL(filters, &string_buf_pool, &any_buf_pool)
+					query, err := SQL(filters, &string_buf_pool, &any_buf_pool, max_limit)
 					if err != nil {
 						if _, e := writer.Write([]byte(fmt.Sprintf("[\"NOTICE\",\"SQL Query Error: %s\"]", err.Error()))); e != nil {
 							return
@@ -364,7 +373,7 @@ func main() {
 	}
 }
 
-func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool, logger *log.Logger) {
+func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Pool, logger *log.Logger, c *Config) {
 	limiter := rate.NewLimiter(25, 5)
 	dbconn, e := dbpool.Acquire(context.Background())
 	if e != nil {
@@ -375,8 +384,10 @@ func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Poo
 	} else {
 		logger.Printf("database initialized: %d expired events deleted", t.RowsAffected())
 	}
+	s := c.Settings()
+	ticker := time.NewTicker(s.delete_expired_events_period)
+	c.Done()
 
-	ticker := time.NewTicker(delete_expired_events_period)
 	delegation_token := new(nip26.DelegationToken)
 	jsonbuf := bytes.NewBuffer(nil)
 	ptags := make([]string, 0)
@@ -531,9 +542,6 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 				mu.Unlock()
 			}()
 		case close := <-close_chan:
-			if len(close.id) > subid_max_length {
-				continue
-			}
 			uid := close.addr + "/" + close.id
 			mu.Lock()
 			delete(subids, uid)

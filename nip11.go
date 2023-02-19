@@ -6,50 +6,44 @@ import (
 	"fmt"
 )
 
-func NIP11_gzip_bytes() (doc []byte, gzip_doc []byte, err error) {
+type NIP11_document struct {
+	document      []byte
+	gzip_document []byte
+}
+
+func (doc *NIP11_document) Parse(nip11_document_bytes []byte) (err error) {
 	bw := bytes.NewBuffer(nil)
 	gzip_writer := gzip.NewWriter(bw)
-	var gzip_document []byte
-	var document []byte = []byte(nip11_info_document)
-	if _, err := gzip_writer.Write(document); err != nil {
-		return nil, nil, err
+	if _, err := gzip_writer.Write(nip11_document_bytes); err != nil {
+		return err
 	} else {
 		if err := gzip_writer.Flush(); err != nil {
-			panic(err)
+			return err
 		}
-		gzip_document = make([]byte, bw.Len())
-		if _, err := bw.Read(gzip_document); err != nil {
-			panic(err)
-		} else {
+		for len(doc.gzip_document) < bw.Len() {
+			doc.gzip_document = append(doc.gzip_document, '0')
+		}
+		doc.gzip_document = doc.gzip_document[:bw.Len()]
+		if _, err := bw.Read(doc.gzip_document); err != nil {
+			return err
 		}
 	}
-	if _, err := bw.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n")); err != nil {
-		return nil, nil, err
-	}
-	if _, err := bw.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n", len(gzip_document)))); err != nil {
-		return nil, nil, err
-	}
-	if _, err := bw.Write([]byte("Connection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nContent-Encoding: gzip\r\n\r\n")); err != nil {
-		return nil, nil, err
-	}
-	bw.Write(gzip_document)
-	gzip_document = append(gzip_document[:0], bw.Bytes()...)
+	bw.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n"))
+	bw.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n", len(doc.gzip_document))))
+	bw.Write([]byte("Connection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nContent-Encoding: gzip\r\n\r\n"))
+	bw.Write(doc.gzip_document)
+	doc.gzip_document = append(doc.gzip_document[:0], bw.Bytes()...)
 
 	bw.Reset()
-	if _, err := bw.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")); err != nil {
-		return nil, nil, err
+	doc.document = append(doc.document[:0], nip11_document_bytes...)
+	bw.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"))
+	bw.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n", len(doc.document))))
+	bw.Write([]byte("Connection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n"))
+	if _, err = bw.Write(doc.document); err != nil {
+		return err
 	}
-	if _, err := bw.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n", len(document)))); err != nil {
-		return nil, nil, err
-	}
-	if _, err := bw.Write([]byte("Connection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n")); err != nil {
-		return nil, nil, err
-	}
-	if _, err := bw.Write(document); err != nil {
-		return nil, nil, err
-	}
-	document = append(document[:0], bw.Bytes()...)
-	return document, gzip_document, nil
+	doc.document = append(doc.document[:0], bw.Bytes()...)
+	return nil
 }
 
 var target_value = []byte("application/nostr+json")

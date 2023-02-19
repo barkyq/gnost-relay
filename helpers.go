@@ -54,7 +54,7 @@ func (q *Query) Release() {
 	q.pool.Put(q.params)
 }
 
-func SQL(filters []ParsedFilter, string_buf_pool *sync.Pool, any_buf_pool *sync.Pool) (*Query, error) {
+func SQL(filters []ParsedFilter, string_buf_pool *sync.Pool, any_buf_pool *sync.Pool, max_limit int) (*Query, error) {
 	queries := string_buf_pool.Get().([]string)
 	params := any_buf_pool.Get().([]any)
 	defer string_buf_pool.Put(queries)
