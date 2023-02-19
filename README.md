@@ -7,7 +7,7 @@ Nostr relay written in go
 - Event handling logic happens via SQL triggers (i.e., NIPs [9][9], [16][16], [33][33], [40][40]).
 - New events are notified to listeners via postgresql's built in `pg_notify` feature. This implies that different instances of `gnost-relay` can be run concurrently. Indeed, any software which writes to the DB will automatically notify listeners connected to the relay.
 - Memory allocations are minimized using pools.
-- Token bucket style rate limiters for handling the messages on each websocket connection.
+- Token bucket style rate limiters for handling the messages are enabled on each websocket connection.
 
 [9]: https://github.com/nostr-protocol/nips/blob/master/09.md
 [12]: https://github.com/nostr-protocol/nips/blob/master/12.md
