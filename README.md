@@ -19,3 +19,8 @@ Nostr relay written in go
 [33]: https://github.com/nostr-protocol/nips/blob/master/33.md
 [40]: https://github.com/nostr-protocol/nips/blob/master/40.md
 [42]: https://github.com/nostr-protocol/nips/blob/master/42.md
+
+## Installation notes
+- Needs to have a `postgresql` database configured. The executable expects that the `DATABASE_URL` environment variable is set.
+- Should be run with a reverse proxy in front (e.g., NGINX).
+- See the [instructions](INSTALL.md) for more details.
