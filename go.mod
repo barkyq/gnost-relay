@@ -10,7 +10,7 @@ require (
 	golang.org/x/time v0.3.0
 )
 
-replace github.com/gobwas/ws => github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f
+replace github.com/gobwas/ws => github.com/barkyq/ws v0.0.0-20230219003920-30f8677082e0
 
 replace github.com/nbd-wtf/go-nostr => github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717
 

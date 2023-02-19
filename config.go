@@ -6,7 +6,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const relay_url = "localhost"
+const relay_url = "ws://localhost"
 const nip11_info_document = "{\"name\":\"GNOST Relay\",\"description\":\"GNOST Relay\",\"pubkey\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"contact\":\"barkyq\",\"supported_nips\":[9,12,15,16,20,22,26,28,33,42],\"software\":\"git+https://github.com/barkyq/gnost-relay\",\"version\":\"0.1\"}"
 
 const max_limit = 25

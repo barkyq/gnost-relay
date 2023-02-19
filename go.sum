@@ -2,8 +2,8 @@ github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8 h1
 github.com/SaveTheRbtz/generic-sync-map-go v0.0.0-20220414055132-a37292614db8/go.mod h1:ihkm1viTbO/LOsgdGoFPBSvzqvx7ibvkMzYp3CgtHik=
 github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717 h1:I/WR3qUOOY5HZXWXXuRcMt6siLul9hezZSrH/xUscIk=
 github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717/go.mod h1:qFFTIxh15H5GGN0WsBI/P73DteqsevnhSEW/yk8nEf4=
-github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f h1:8FqDMCE/2i7sRBIhs98B+4e7TFzsnN3+9HUL2GrDuBY=
-github.com/barkyq/ws v0.0.0-20230205222032-d521901f820f/go.mod h1:nzvNcVha5eUziGrbxFCo6qFIojQHjJV5cLYIbezhfL0=
+github.com/barkyq/ws v0.0.0-20230219003920-30f8677082e0 h1:25IHZtWjf7/dJioFCd8qE3F5X9XkCW/ha8fKz4XnDEo=
+github.com/barkyq/ws v0.0.0-20230219003920-30f8677082e0/go.mod h1:nzvNcVha5eUziGrbxFCo6qFIojQHjJV5cLYIbezhfL0=
 github.com/btcsuite/btcd/btcec/v2 v2.2.0 h1:fzn1qaOt32TuLjFlkzYSsBC35Q3KUjT1SwPxiMSCF5k=
 github.com/btcsuite/btcd/btcec/v2 v2.2.0/go.mod h1:U7MHm051Al6XmscBQ0BoNydpOTsFAn707034b5nY8zU=
 github.com/btcsuite/btcd/chaincfg/chainhash v1.0.1 h1:q0rUy8C/TYNBQS1+CGKw68tLOFYSNEs0TFnxxnS9+4U=

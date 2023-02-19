@@ -10,7 +10,6 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"net/http"
 	"os"
 	"sync"
 	"syscall"
@@ -65,7 +64,7 @@ func main() {
 
 	// NIP_11_bytes.
 	// Readonly so don't need Mutex
-	nip_11_bytes, err := NIP11_bytes()
+	nip_11_bytes, gzip_nip_11_bytes, err := NIP11_gzip_bytes()
 	if err != nil {
 		panic(err)
 	}
@@ -106,12 +105,15 @@ func main() {
 			for {
 				if _, err = upgrader.Upgrade(conn); err != nil {
 					// error in upgrade. check if hijacked.
-					if c, ok := err.(*ws.ConnectionRejectedError); ok == true {
-						if c.StatusCode() == http.StatusTeapot {
+					if e, ok := err.(*nip11_escape); ok == true {
+						switch e.encoding {
+						case [4]byte{'g', 'z', 'i', 'p'}:
+							conn.Write(gzip_nip_11_bytes)
+						default:
 							conn.Write(nip_11_bytes)
-							// listen for more GET requests on this connection.
-							continue
 						}
+						// listen for more GET requests on this connection.
+						continue
 					} else {
 						// error in upgrade, and was not hijacked by NIP11, so close and continue
 						return
