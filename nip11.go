@@ -52,14 +52,15 @@ func NIP11_gzip_bytes() (doc []byte, gzip_doc []byte, err error) {
 	return document, gzip_document, nil
 }
 
-func NIP11_EscapeHatch() func(error, []byte, []byte) error {
-	encoding := make([]byte, 4)
+var target_value = []byte("application/nostr+json")
+
+func NIP11_EscapeHatch(encoding []byte) func(error, []byte, []byte) error {
+	var k [10]byte
 	return func(err error, key, value []byte) error {
-		var b [10]byte
-		copy(b[:], key)
-		switch b {
+		k = [10]byte{}
+		copy(k[:], key)
+		switch k {
 		case [10]byte{'A', 'c', 'c', 'e', 'p', 't'}:
-			target_value := []byte("application/nostr+json")
 			if len(value) > 22 {
 				return nil
 			}
@@ -68,7 +69,7 @@ func NIP11_EscapeHatch() func(error, []byte, []byte) error {
 					return nil
 				}
 			}
-			return &nip11_escape{true, encoding}
+			return &nip11_escape{}
 		case [10]byte{'A', 'c', 'c', 'e', 'p', 't', '-', 'E', 'n', 'c'}:
 			copy(encoding, value)
 		}
@@ -76,15 +77,12 @@ func NIP11_EscapeHatch() func(error, []byte, []byte) error {
 	}
 }
 
-type nip11_escape struct {
-	escape   bool
-	encoding []byte
-}
+type nip11_escape struct{}
 
 func (err *nip11_escape) Error() string {
 	return "nip11 escape error"
 }
 
 func (err *nip11_escape) Escape() bool {
-	return err.escape
+	return true
 }

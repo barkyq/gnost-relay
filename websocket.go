@@ -253,11 +253,6 @@ func handle_websocket(handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool
 	return
 }
 
-func WS_upgrader() ws.Upgrader {
-	// nip11 handler + websocket upgrader
-	return ws.Upgrader{OnHeader: NIP11_EscapeHatch(), Extension: negotiate}
-}
-
 var ws_upgrade_params = wsflate.Parameters{
 	ServerNoContextTakeover: false, // default: server can reuse LZ77 buffer
 	ClientNoContextTakeover: false, // default: client can reuse LZ77 buffer

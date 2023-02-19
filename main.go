@@ -103,8 +103,6 @@ func main() {
 	go EventSubmissionHandler(event_chan, dbpool, logger)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool, logger)
 
-	upgrader := WS_upgrader()
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -113,22 +111,23 @@ func main() {
 
 		// one go routine per conn
 		go func() {
+			var encoding [4]byte
+			upgrader := ws.Upgrader{OnHeader: NIP11_EscapeHatch(encoding[:]), Extension: negotiate}
 			defer conn.Close()
 			// pre-upgrade handler
 			var handshake *ws.Handshake
 			for {
 				if hs, err := upgrader.Upgrade(conn); err != nil {
 					// error in upgrade. check if hijacked.
-					if e, ok := err.(*nip11_escape); ok == true {
-						var b [4]byte
-						copy(b[:], e.encoding)
-						switch b {
+					if _, ok := err.(*nip11_escape); ok == true {
+						switch encoding {
 						case [4]byte{'g', 'z', 'i', 'p'}:
 							conn.Write(gzip_nip_11_bytes)
 						default:
 							conn.Write(nip_11_bytes)
 						}
 						// listen for more GET requests on this connection.
+						encoding = [4]byte{}
 						continue
 					} else {
 						// error in upgrade, and was not hijacked by NIP11, so close and continue
