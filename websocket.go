@@ -255,7 +255,7 @@ func handle_websocket(handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool
 
 func WS_upgrader() ws.Upgrader {
 	// nip11 handler + websocket upgrader
-	return ws.Upgrader{OnHeader: NIP11_hijack_header, Extension: negotiate}
+	return ws.Upgrader{OnHeader: NIP11_EscapeHatch(), Extension: negotiate}
 }
 
 var ws_upgrade_params = wsflate.Parameters{

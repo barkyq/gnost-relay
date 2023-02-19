@@ -120,7 +120,9 @@ func main() {
 				if hs, err := upgrader.Upgrade(conn); err != nil {
 					// error in upgrade. check if hijacked.
 					if e, ok := err.(*nip11_escape); ok == true {
-						switch e.encoding {
+						var b [4]byte
+						copy(b[:], e.encoding)
+						switch b {
 						case [4]byte{'g', 'z', 'i', 'p'}:
 							conn.Write(gzip_nip_11_bytes)
 						default:
