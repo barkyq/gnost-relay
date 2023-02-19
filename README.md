@@ -4,6 +4,7 @@ Nostr relay written in go
 ## Features
 - NIPs supported: [9][9], [12][12], [15][15], [16][16], [20][20], [26][26], [28][28], [33][33], [40][40], [42][42].
 - Websocket compression support (`permessage-deflate`), with support for client and server context takeover (i.e., sliding window support).
+- Hot config reloading. Edits to the `config.json` file will be instantly applied without requiring restart.
 - Event handling logic happens via SQL triggers (i.e., NIPs [9][9], [16][16], [33][33], [40][40]).
 - New events are notified to listeners via postgresql's built in `pg_notify` feature. This implies that different instances of `gnost-relay` can be run concurrently. Indeed, any software which writes to the DB will automatically notify listeners connected to the relay.
 - Memory allocations are minimized using pools.

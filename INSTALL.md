@@ -21,9 +21,9 @@ Debian instructions only. Ubuntu should be similar. Suppose that the user on the
 
 2. Clone this repository.
 
-3. Edit the `config.go` file. The most important variable to change is the `relay_url` variable in `config.go`. You can also change the `nip11_info_document` variable if you like.
+3. Build the `gnost-relay` executable by running `go build .` in the directory you cloned the repository to.
 
-4. Build the `gnost-relay` executable by running `go build .` in the directory you cloned the repository to.
+4. Edit the `config.json` file. You need to change `relay_url` field if you want NIP-42 to work. You can also change the `nip11_info_document` field if you like.
 
 5. Run the executable.
 
