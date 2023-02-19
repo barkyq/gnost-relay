@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
-
 	"strings"
 	"sync"
 
@@ -33,6 +33,15 @@ type ParsedFilter struct {
 	Limit   *int
 	Dtags   []string
 	Gtags   []string
+}
+
+type Message struct {
+	jmsg []json.RawMessage
+	pool *sync.Pool
+}
+
+func (msg *Message) Release() {
+	msg.pool.Put(msg.jmsg)
 }
 
 type Query struct {
