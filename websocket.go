@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/flate"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,7 +22,7 @@ const read_buffer_size = 1024
 
 var flush_bytes = [4]byte{0x00, 0x00, 0xff, 0xff}
 
-func handle_websocket(handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool, flate_writer_pool, mask_buf_pool, msg_pool *sync.Pool, conn net.Conn, logger *log.Logger) (msgs chan *Message, writer io.WriteCloser) {
+func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool, flate_writer_pool, mask_buf_pool, msg_pool *sync.Pool, conn net.Conn, logger *log.Logger) (msgs chan *Message, writer io.WriteCloser) {
 	var permessage_deflate, server_nct, client_nct bool
 	for _, opt := range handshake.Extensions {
 		target := []byte("permessage-deflate")
@@ -101,10 +102,8 @@ func handle_websocket(handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool
 				switch {
 				case e == nil:
 				case e == io.EOF:
-					if e := ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, ""))); e != nil {
-						panic(e)
-					}
-					time.Sleep(10 * time.Second)
+					ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+					time.Sleep(2 * time.Second)
 					if cl, ok := conn.(io.Closer); ok == true {
 						cl.Close()
 					}
@@ -130,6 +129,9 @@ func handle_websocket(handshake *ws.Handshake, bytes_buf_pool, flate_reader_pool
 
 	// receiving handler
 	go func() {
+		defer cancel()
+		defer wg.Done()
+		defer conn.Close()
 		payload := bytes_buf_pool.Get().(*bytes.Buffer)
 		control := bytes_buf_pool.Get().(*bytes.Buffer)
 		mask_buf := mask_buf_pool.Get().([]byte)

@@ -1,23 +1,30 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"context"
 	crypto "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
 
 	"github.com/gobwas/ws"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip26"
@@ -46,9 +53,13 @@ type CloseSubmission struct {
 	ctx  context.Context
 }
 
+var config = flag.String("config", "config.json", "configuration json file")
+var import_flag = flag.Bool("import", false, "import jsonl events on stdin")
+
 func main() {
-	// initialize configuration
-	c, err := InitConfig("config.json")
+	// initialize configuration file
+	flag.Parse()
+	c, err := InitConfig(*config)
 	if err != nil {
 		panic(err)
 	}
@@ -79,6 +90,61 @@ func main() {
 		return flate.NewReader(dummy)
 	}}
 
+	logger := log.New(os.Stderr, "(gnost-relay) ", log.LstdFlags|log.Lmsgprefix)
+	main_ctx, main_cancel := context.WithCancel(context.Background())
+	if *import_flag {
+		go func() {
+			dbconn, err := dbpool.Acquire(main_ctx)
+			if err != nil {
+				panic(err)
+			}
+			evt := event_pool.Get().(*nostr.Event)
+			buf := bufio.NewReader(os.Stdin)
+			ptags := string_buf_pool.Get().([]string)
+			etags := string_buf_pool.Get().([]string)
+			gtags := string_buf_pool.Get().([]string)
+			jsonbuf := bytes_buf_pool.Get().(*bytes.Buffer)
+			defer event_pool.Put(evt)
+			defer string_buf_pool.Put(ptags)
+			defer string_buf_pool.Put(etags)
+			defer string_buf_pool.Put(gtags)
+			defer bytes_buf_pool.Put(jsonbuf)
+
+			delegation_token := new(nip26.DelegationToken)
+			ev := &EventSubmission{event: evt, ctx: main_ctx}
+			var dup_count int
+			var exp_count int
+			for {
+				line, err := buf.ReadSlice('\n')
+				if err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
+						logger.Printf("Reached EOF on stdin, %d duplicates, %d expired", dup_count, exp_count)
+						return
+					} else {
+						panic(err)
+					}
+				}
+				if err := json.Unmarshal(line, evt); err != nil {
+					return
+				}
+				if ok, err := evt.CheckSignature(); ok && err == nil {
+					if err := ev.store_event(dbconn, ptags, etags, gtags, delegation_token, jsonbuf); err != nil {
+						if e, ok := err.(*pgconn.PgError); ok {
+							switch e.Code {
+							case "23505": // duplicate
+								dup_count++
+							case "P0001": // expired
+								exp_count++
+							}
+						}
+					}
+				} else {
+					logger.Println(evt.ID, "invalid signature")
+				}
+			}
+		}()
+	}
+
 	// for generating NIP-42 AUTH challenges
 	// rand_reader is not safe for concurrent use
 	var challenge_bytes [16]byte
@@ -96,23 +162,45 @@ func main() {
 	req_chan := make(chan ReqSubmission, 64)
 	close_chan := make(chan CloseSubmission, 64)
 
-	logger := log.Default()
-
 	// start handlers
 	go EventSubmissionHandler(event_chan, dbpool, logger, c)
 	go ReqSubmissionHandler(req_chan, close_chan, dbpool, logger)
 
+	go func() {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+		<-sigs
+		fmt.Println()
+		os.Stdin.Close()
+		main_cancel()
+		ln.Close()
+	}()
+
+	// used for exiting gracefully
+	var wg sync.WaitGroup
 	for {
+		if main_ctx.Err() != nil {
+			wg.Wait()
+			logger.Print("exited gracefully.")
+			return
+		}
 		conn, err := ln.Accept()
 		if err != nil {
-			panic(err)
+			if errors.Is(err, net.ErrClosed) {
+				logger.Println("closing all connections... enter C-\\ to quit immediately")
+				continue
+			} else {
+				panic(err)
+			}
 		}
 
 		// one go routine per conn
+		wg.Add(2)
 		go func() {
+			defer wg.Done()
 			var encoding [4]byte
 			upgrader := ws.Upgrader{OnHeader: NIP11_EscapeHatch(encoding[:]), Extension: negotiate}
-			defer conn.Close()
+
 			// pre-upgrade handler
 			var handshake *ws.Handshake
 			for {
@@ -133,6 +221,8 @@ func main() {
 						continue
 					} else {
 						// error in upgrade, and was not hijacked by NIP11, so close and continue
+						// need an extra wg.Done() since the websocket handler won't be started
+						wg.Done()
 						return
 					}
 				} else {
@@ -143,11 +233,12 @@ func main() {
 			}
 
 			// allocate stuff for websocket connection
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(main_ctx)
+			defer cancel()
+
 			s := c.Settings()
 			limiter := rate.NewLimiter(s.websocket_rate_limit, s.websocket_burst)
 			c.Done()
-			defer cancel()
 
 			// generate websocket_id
 			rand_mu.Lock()
@@ -156,9 +247,7 @@ func main() {
 			rand_mu.Unlock()
 			var authenticated_user string
 
-			msgs, writer := handle_websocket(handshake, &bytes_buf_pool, &flate_reader_pool, &flate_writer_pool, &mask_buf_pool, &msg_pool, conn, logger)
-			defer writer.Close()
-
+			msgs, writer := handle_websocket(cancel, &wg, handshake, &bytes_buf_pool, &flate_reader_pool, &flate_writer_pool, &mask_buf_pool, &msg_pool, conn, logger)
 			// send NIP-42 challenge
 			if _, err := writer.Write([]byte(fmt.Sprintf("[\"AUTH\",\"%s\"]", websocket_id))); err != nil {
 				return
@@ -166,12 +255,19 @@ func main() {
 				writer.Write(flush_bytes[:])
 			}
 
+			defer writer.Close()
+
 			// post upgrade handler
 			var relay_url string
 			var subid_max_length, max_limit int
+			var msg *Message
 			for {
 				// AUTH, EVENT, REQ, CLOSE
-				msg := <-msgs
+				select {
+				case msg = <-msgs:
+				case <-ctx.Done():
+					return
+				}
 				if len(msg.jmsg) < 2 {
 					msg.Release()
 					if e := limiter.Wait(ctx); e != nil {
@@ -404,7 +500,15 @@ func EventSubmissionHandler(event_chan chan EventSubmission, dbpool *pgxpool.Poo
 			}
 		case ev := <-event_chan:
 			if e := limiter.Wait(ev.ctx); e == nil {
-				if e := ev.store_event(dbconn, ptags, etags, gtags, delegation_token, jsonbuf); e != nil {
+				err := ev.store_event(dbconn, ptags, etags, gtags, delegation_token, jsonbuf)
+				if e, ok := err.(*pgconn.PgError); ok {
+					switch e.Code {
+					case "23505":
+						// duplicate
+						err = nil
+					}
+				}
+				if err != nil {
 					if _, e := ev.writer.Write([]byte(fmt.Sprintf("[\"OK\",\"%s\",false,\"event not accepted into database\"]", ev.event.ID))); e != nil {
 						ev.writer.Close()
 						ev.cancel()

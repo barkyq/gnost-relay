@@ -23,7 +23,9 @@ func (ev *EventSubmission) StoreEvent(dbconn *pgxpool.Conn) error {
 
 // unexported. more efficient by reusing memory allocations
 func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, etags []string, gtags []string, delegation_token *nip26.DelegationToken, jsonbuf *bytes.Buffer) error {
-	defer ev.return_pool.Put(ev.event)
+	if ev.return_pool != nil {
+		defer ev.return_pool.Put(ev.event)
+	}
 	jsonbuf.Reset()
 	enc := json.NewEncoder(jsonbuf)
 	// turn off stupid go json encoding automatically doing HTML escaping...
@@ -54,8 +56,10 @@ func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, eta
 		case tag[0] == "d":
 			dtag = &tag[1]
 		case tag[0] == "delegation":
-			if _, err := delegation_token.Parse(ev.event); err == nil {
+			if ok, err := delegation_token.Parse(ev.event); err == nil && ok {
 				ev.event.PubKey = delegation_token.Tag()[1]
+			} else {
+				return fmt.Errorf("invalid delegation token")
 			}
 		case tag[0] == "expiration":
 			if t, e := strconv.ParseInt(tag[1], 10, 64); e == nil {
@@ -66,8 +70,7 @@ func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, eta
 		}
 	}
 	_, e := dbconn.Exec(ev.ctx, `INSERT INTO db1 (id, pubkey, created_at, kind, ptags, etags, dtag, expiration, gtags, raw)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (id) DO NOTHING;`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, expiration, gtags, jsonbuf.Bytes())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`, ev.event.ID, ev.event.PubKey, ev.event.CreatedAt.Unix(), ev.event.Kind, ptags, etags, dtag, expiration, gtags, jsonbuf.Bytes())
 	if e != nil {
 		return e
 	}
