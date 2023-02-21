@@ -14,7 +14,7 @@ Debian instructions only. Ubuntu should be similar. Suppose that the user on the
     ```
     Suppose the password you set is `super_secret_password`.
 
-3. Check if `postgresql` is listening at `127.0.0.1:5432` by running `sudo netstat -tlpn` (which you can install with `apt install net-tools`)
+3. Check if `postgresql` is listening at `127.0.0.1:5432` by running `sudo netstat -tlpn` (install with `apt install net-tools`)
 
 ## Building gnost-relay
 1. Download a recent version of `go` from https://go.dev/dl/. Follow the installation instructions.
