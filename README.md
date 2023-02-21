@@ -18,10 +18,10 @@ Nostr relay written in go
 DATABASE_URL=postgres://x gnost-relay --config config.json
 ```
 #### Importing events
-With `keepalive` set, the connection to `knostr.neutrine.com` will remain open, and new events will be added to the `gnost-relay` database, and notified to any listeners. See [gnost-deflate-client][gnost-deflate-client] for more info.
+With `keepalive` set, the connection will remain open, and new events will be added to the `gnost-relay` database, and notified to any listeners. See [gnost-deflate-client][gnost-deflate-client] for more info.
 ```zsh
 echo '[{"since":1676863922,"kinds":[1]}]' |\
-gnost-deflate-client --port 443 --scheme wss --host knostr.neutrine.com --keepalive 30 --output - |\
+gnost-deflate-client --port 443 --scheme wss --host nos.lol --keepalive 30 --output - |\
 DATABASE_URL=postgres://x gnost-relay --import
 ```
 
