@@ -199,7 +199,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			var encoding [4]byte
-			upgrader := ws.Upgrader{OnHeader: NIP11_EscapeHatch(encoding[:]), Extension: negotiate}
+			upgrader := ws.Upgrader{OnHeader: NIP11_EscapeHatch(encoding[:]), Negotiate: negotiate}
 
 			// pre-upgrade handler
 			var handshake *ws.Handshake
@@ -231,7 +231,6 @@ func main() {
 					break
 				}
 			}
-
 			// allocate stuff for websocket connection
 			ctx, cancel := context.WithCancel(main_ctx)
 			defer cancel()

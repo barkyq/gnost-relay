@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+
 	"io"
 	"log"
 	"net"
@@ -39,6 +41,7 @@ func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *
 		_, server_nct = opt.Parameters.Get("server_no_context_takeover")
 	jump:
 	}
+	fmt.Println(conn.RemoteAddr(), permessage_deflate, client_nct, server_nct)
 	msgs = make(chan *Message)
 
 	// data to writer is compressed (if negotiated) and sent to reader
@@ -255,28 +258,30 @@ func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *
 	return
 }
 
-var ws_upgrade_params = wsflate.Parameters{
-	ServerNoContextTakeover: false, // default: server can reuse LZ77 buffer
-	ClientNoContextTakeover: false, // default: client can reuse LZ77 buffer
-}
+// var ws_upgrade_params = wsflate.Parameters{
+// 	ServerNoContextTakeover: false, // default: server can reuse LZ77 buffer
+// 	ClientNoContextTakeover: false, // default: client can reuse LZ77 buffer
+// }
 
-func negotiate(opt httphead.Option) bool {
+func negotiate(opt httphead.Option) (httphead.Option, error) {
 	var b [18]byte
 	copy(b[:], opt.Name)
 	if b != [18]byte{'p', 'e', 'r', 'm', 'e', 's', 's', 'a', 'g', 'e', '-', 'd', 'e', 'f', 'l', 'a', 't', 'e'} {
-		return false
+		// do not accept any extensions besides permessage-deflate
+		return httphead.Option{}, nil
 	}
 	client_params := wsflate.Parameters{}
 	if err := client_params.Parse(opt); err != nil {
-		return false
+		// error parsing, do not accept the extension
+		return httphead.Option{}, nil
 	} else {
-		switch {
-		case client_params.ClientMaxWindowBits != ws_upgrade_params.ClientMaxWindowBits:
-			return false
-		case client_params.ServerMaxWindowBits != ws_upgrade_params.ServerMaxWindowBits:
-			return false
-		default:
-			return true
+		ws_upgrade_params := wsflate.Parameters{
+			ServerNoContextTakeover: client_params.ServerNoContextTakeover,
+			ClientNoContextTakeover: client_params.ClientNoContextTakeover,
 		}
+		if client_params.ServerMaxWindowBits.Defined() {
+			ws_upgrade_params.ServerNoContextTakeover = true
+		}
+		return ws_upgrade_params.Option(), nil
 	}
 }
