@@ -248,9 +248,9 @@ func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *
 			jmsg := msg_pool.Get().([]json.RawMessage)
 			if err := decoder.Decode(&jmsg); err != nil {
 				msg_pool.Put(jmsg)
-				continue
+			} else {
+				msgs <- &Message{jmsg, msg_pool}
 			}
-			msgs <- &Message{jmsg, msg_pool}
 			if r, ok := fr.(flate.Resetter); client_nct && ok == true {
 				r.Reset(payload, nil)
 			}
