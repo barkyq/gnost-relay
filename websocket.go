@@ -249,6 +249,8 @@ func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *
 			jmsg := msg_pool.Get().([]json.RawMessage)
 			if err := decoder.Decode(&jmsg); err != nil {
 				msg_pool.Put(jmsg)
+				// send empty message to signal the json could not be unmarshalled
+				msgs <- nil
 			} else {
 				msgs <- &Message{jmsg, msg_pool}
 			}

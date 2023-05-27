@@ -261,23 +261,30 @@ func main() {
 			var subid_max_length, max_limit int
 			var msg *Message
 			for {
-				// AUTH, EVENT, REQ, CLOSE
 				select {
 				case msg = <-msgs:
+					if msg == nil || msg.jmsg == nil || msg.pool == nil || len(msg.jmsg) < 2 {
+						if msg != nil && msg.jmsg != nil && msg.pool != nil {
+							msg.Release()
+						}
+						if _, err := writer.Write([]byte("[\"NOTICE\",\"Invalid message\"]")); err != nil {
+							return
+						} else {
+							writer.Write(flush_bytes[:])
+						}
+						if e := limiter.Wait(ctx); e != nil {
+							logger.Println("connection closed", conn.RemoteAddr())
+							return
+						}
+						continue
+					}
 				case <-ctx.Done():
 					return
-				}
-				if len(msg.jmsg) < 2 {
-					msg.Release()
-					if e := limiter.Wait(ctx); e != nil {
-						logger.Println("connection closed", conn.RemoteAddr())
-						return
-					}
-					continue
 				}
 				s := c.Settings()
 				relay_url, subid_max_length, max_limit = s.relay_url, s.subid_max_length, s.max_limit
 				c.Done()
+				// AUTH, EVENT, REQ, CLOSE
 				switch {
 				case msg.jmsg[0][1] == 'A': // AUTH
 					ev := event_pool.Get().(*nostr.Event)
