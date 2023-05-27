@@ -195,7 +195,8 @@ func handle_websocket(cancel context.CancelFunc, wg *sync.WaitGroup, handshake *
 					n, err = conn.Read(mask_buf[:remaining])
 				}
 				if err != nil {
-					panic(err)
+					logger.Println(err)
+					return
 				}
 				remaining -= int64(n)
 				if header.Masked {
