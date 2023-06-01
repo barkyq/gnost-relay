@@ -2,7 +2,7 @@
 Nostr relay written in go
 
 ## Features
-- NIPs supported: [9][9], [12][12], [15][15], [16][16], [20][20], [26][26], [28][28], [33][33], [40][40], [42][42].
+- NIPs supported: [1][1], [9][9], [11][11], [12][12], [15][15], [16][16], [20][20], [26][26], [28][28], [33][33], [40][40], [42][42].
 - Websocket compression support (`permessage-deflate`), with support for client and server context takeover (i.e., sliding window support).
 - Hot config reloading. Edits to the `config.json` file will be instantly applied without requiring restart.
 - `--import` command line flag allows new events to be added via `stdin`. Events should be in `jsonl` format. Use in conjunction with [gnost-deflate-client][gnost-deflate-client]
@@ -25,7 +25,9 @@ gnost-deflate-client --port 443 --scheme wss --host nos.lol --keepalive 30 --out
 DATABASE_URL=postgres://x gnost-relay --import
 ```
 
+[1]: https://github.com/nostr-protocol/nips/blob/master/01.md
 [9]: https://github.com/nostr-protocol/nips/blob/master/09.md
+[11]: https://github.com/nostr-protocol/nips/blob/master/11.md
 [12]: https://github.com/nostr-protocol/nips/blob/master/12.md
 [15]: https://github.com/nostr-protocol/nips/blob/master/15.md
 [16]: https://github.com/nostr-protocol/nips/blob/master/16.md
