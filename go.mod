@@ -12,7 +12,7 @@ require (
 	golang.org/x/time v0.3.0
 )
 
-replace github.com/gobwas/ws => github.com/barkyq/ws v0.0.0-20230219003920-30f8677082e0
+replace github.com/gobwas/ws => github.com/barkyq/ws v0.0.0-20230601190330-0928bdfc7eab
 
 replace github.com/nbd-wtf/go-nostr => github.com/barkyq/go-nostr v0.0.0-20230212114450-7c1ab3e62717
 
@@ -31,6 +31,6 @@ require (
 	golang.org/x/crypto v0.0.0-20220829220503-c86fa9a7ed90 // indirect
 	golang.org/x/exp v0.0.0-20221106115401-f9659909a136 // indirect
 	golang.org/x/sync v0.0.0-20220923202941-7f9b1623fab7 // indirect
-	golang.org/x/sys v0.1.0 // indirect
+	golang.org/x/sys v0.6.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
