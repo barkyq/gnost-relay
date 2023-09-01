@@ -44,12 +44,43 @@ Debian instructions only. Ubuntu should be similar. Suppose that the user on the
     ```zsh
     sudo certbot --nginx certonly -d relay.foo.bar
     ```
-3. Copy the nginx configuration from `nginx.txt` to `/etc/nginx/sites-available/relay.foo.bar` and then make a symlink to this file in `/etc/sites-enabled/` by running:
+3. Copy the nginx configuration from `nginx.txt` to `/etc/nginx/sites-available/relay.foo.bar` and then make a symlink to this file in `/etc/nginx/sites-enabled/` by running:
 
     ```zsh
     cd /etc/nginx/sites-enabled/
     sudo ln -s ../sites-available/relay.foo.bar .
     ```
-4. Restart `nginx` by running `sudo nginx -s reload`
+4. Reload `nginx` but running `sudo nginx -s reload` or restart `nginx` by running `sudo nginx restart`
 
 5. If all went well, you should be able to connect to your relay at `wss://relay.foo.bar`
+
+## External NGINX server
+
+This section assumes you have an external NGINX server and need to point it to the relay.
+
+1. Open the `config.json` file and change the `host` value to match the server's hostname or IP address and port.
+    ```zsh
+    "host": "192.168.1.2:8080"
+    ```
+    or
+    ```zsh
+    "host": "relay.example.local:1234"
+    ```
+
+2. Copy the nginx configuration from `nginx.txt` to `/etc/nginx/sites-available/relay.foo.bar` 
+
+3. Edit your configuration file to change the `proxy_pass` variable to match the server hostname or IP and listening port.
+    ```zsh
+    proxy_pass 192.168.1.2:8080
+    ```
+
+4. Make a symlink to this file in `/etc/nginx/sites-enabled/` by running:
+
+    ```zsh
+    cd /etc/nginx/sites-enabled/
+    sudo ln -s ../sites-available/relay.foo.bar .
+    ```
+
+5. Reload `nginx` but running `sudo nginx -s reload` or restart `nginx` by running `sudo nginx restart`
+
+6. If all went well, you should be able to connect to your relay at `wss://relay.foo.bar`
