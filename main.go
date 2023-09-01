@@ -559,6 +559,7 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 					panic(err)
 				}
 			} else {
+				//fmt.Errorf("notification error: %s", err.Error())
 				panic(err)
 			}
 			mu.Lock()

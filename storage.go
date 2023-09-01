@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS db1 (
   etags text[],
   ptags text[],
   dtag text,
-  expiration integer,
+  expiration bigint,
   gtags text[],
   raw json
 );
