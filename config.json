@@ -1,4 +1,5 @@
 {
+    "host": "localhost:8080",
     "relay_url":"ws://localhost",
     "nip11_info_document":{"name":"GNOST Relay","description":"GNOST Relay","pubkey":"0000000000000000000000000000000000000000000000000000000000000000","contact":"barkyq","supported_nips":[1,9,11,12,15,16,20,22,26,28,33,40,42],"software":"git+https://github.com/barkyq/gnost-relay","version":"0.3"},
     "max_limit":25,

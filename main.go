@@ -153,7 +153,13 @@ func main() {
 	rand_reader := rand.New(rand.NewSource(time.Now().UnixNano() + int64(challenge_bytes[0]) + 256*int64(challenge_bytes[1]) + 256*256*int64(challenge_bytes[2]) + 256*256*256*int64(challenge_bytes[3]) + 256*256*256*256*int64(challenge_bytes[4])))
 
 	// start the listener
-	ln, err := net.Listen("tcp", "localhost:8080")
+	// host DOES NOT get reloaded with hot config
+	host := func() string {
+		s := c.Settings()
+		defer c.Done()
+		return s.host
+	}()
+	ln, err := net.Listen("tcp", host)
 	if err != nil {
 		panic(err)
 	}

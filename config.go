@@ -13,6 +13,7 @@ import (
 )
 
 type Settings struct {
+	host                         string
 	relay_url                    string
 	nip11_info_document          []byte
 	max_limit                    int
@@ -110,6 +111,9 @@ func (s *Settings) parseSettings(filename string) (e error) {
 		}
 	}
 	// require sane defaults
+	if s.host == "" {
+		s.host = "localhost:8080"
+	}
 	if s.max_limit == 0 {
 		s.max_limit = 25
 	}
@@ -147,6 +151,13 @@ func (s *Settings) UnmarshalJSON(payload []byte) error {
 		}
 		key := string(k)
 		switch key {
+		case "host":
+			sb, err := v.StringBytes()
+			if err != nil {
+				visiterr = fmt.Errorf("invalid 'host' field: %w", err)
+				return
+			}
+			s.host = string(sb)
 		case "relay_url":
 			sb, err := v.StringBytes()
 			if err != nil {
