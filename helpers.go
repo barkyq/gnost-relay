@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -269,13 +270,13 @@ func (q *ParsedFilter) UnmarshalJSON(payload []byte) error {
 			}
 		case "since":
 			val, err := v.Int64()
-			if err != nil {
+			if err != nil || val > math.MaxInt32 {
 				visiterr = fmt.Errorf("invalid 'since' field: %w", err)
 			}
 			q.Since = &val
 		case "until":
 			val, err := v.Int64()
-			if err != nil {
+			if err != nil || val > math.MaxInt32 {
 				visiterr = fmt.Errorf("invalid 'until' field: %w", err)
 			}
 			q.Until = &val

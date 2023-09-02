@@ -618,7 +618,11 @@ func ReqSubmissionHandler(req_chan chan ReqSubmission, close_chan chan CloseSubm
 					case <-req.ctx.Done():
 						return
 					default:
-						panic(e)
+						if _, e := req.writer.Write([]byte("[\"NOTICE\",\"Invalid filter\"]")); e != nil {
+							req.writer.Close()
+							req.cancel()
+							return
+						}
 					}
 				}
 				for rows.Next() {
