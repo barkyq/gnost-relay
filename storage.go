@@ -62,8 +62,10 @@ func (ev *EventSubmission) store_event(dbconn *pgxpool.Conn, ptags []string, eta
 				return fmt.Errorf("invalid delegation token")
 			}
 		case tag[0] == "expiration":
-			if t, e := strconv.ParseInt(tag[1], 10, 64); e == nil {
+			if t, e := strconv.ParseInt(tag[1], 10, 32); e == nil {
 				expiration = &t
+			} else {
+				return fmt.Errorf("expiration tag integer overflow")
 			}
 		case len(tag[0]) == 1 && len(tag) > 0:
 			gtags = append(gtags, "#"+tag[0]+":"+tag[1])
