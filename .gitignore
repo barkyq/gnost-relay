@@ -1,4 +1,6 @@
+# Project specific files and directories
 gnost-relay
+config.json
 
 # Binaries for programs and plugins
 *.exe
