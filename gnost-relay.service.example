@@ -1,0 +1,21 @@
+[Unit]
+Description=Gnost-relay, a NOSTR relay written in Go
+Documentation=https://github.com/barkyq/gnost-relay
+
+
+[Service]
+User=$USER
+Group=$GROUP
+Type=exec
+WorkingDirectory=$PATH_TO_PROJECT
+Environment="DATABASE_URL=postgres://$PSQL_USER:$PSQL_PASSWORD@$LOCALHOST:5432/$DATABASE_NAME"
+ExecStart=$PATH_TO_PROJECT/gnost-relay --config config.json
+Restart=always
+RestartSec=15s
+
+TimeoutStartSec=15
+TimeoutStopSec=60
+
+
+[Install]
+WantedBy=multi-user.target

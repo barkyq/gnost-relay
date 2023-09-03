@@ -84,3 +84,44 @@ This section assumes you have an external NGINX server and need to point it to t
 5. Reload `nginx` but running `sudo nginx -s reload` or restart `nginx` by running `sudo nginx restart`
 
 6. If all went well, you should be able to connect to your relay at `wss://relay.foo.bar`
+
+## Running the relay as a systemd service
+
+1. Make a copy of the `gnost-relay.service.example` file.
+
+    ```zsh
+    cp gnost-relay.service.example gnost-relay.service
+
+2. Open the service file in your text editor and replace the values beginning with `$`.
+
+    ```zsh
+    vi gnost-relay.service
+    ```
+
+    ```zsh
+    User=$USER
+    Group=$GROUP
+    WorkingDirectory=$PATH_TO_PROJECT
+    Environment="DATABASE_URL=postgres://$PSQL_USER:$PSQL_PASSWORD@$LOCALHOST:5432/$DATABASE_NAME"
+    ExecStart=$PATH_TO_PROJECT/gnost-relay --config config.json
+    ```
+
+3. Save and close the file.
+
+4. Copy the `gnost-relay.service` file to your systemd location, typically `/etc/systemd/system/`.
+
+    ```zsh
+    sudo cp gnost-relay.service /etc/systemd/system/
+    ```
+
+5. Reload systemd
+
+    ```zsh
+    sudo systemctl daemon-reload
+    ```
+
+6. Enable your service
+
+    ```zsh
+    sudo systemctl enable --now gnost-relay.service
+    ```
