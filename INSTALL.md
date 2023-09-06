@@ -23,9 +23,15 @@ Debian instructions only. Ubuntu should be similar. Suppose that the user on the
 
 3. Build the `gnost-relay` executable by running `go build .` in the directory you cloned the repository to.
 
-4. Edit the `config.json` file. You need to change `relay_url` field if you want NIP-42 to work. You can also change the `nip11_info_document` field if you like.
+4. Copy the `config.json.example` before editing. The example will be rewritten with each update.
 
-5. Run the executable.
+		```zsh
+		cp config.json.example config.json
+		```
+
+5. Edit the `config.json` file. You need to change `relay_url` field if you want NIP-42 to work. You can also change the `nip11_info_document` field if you like.
+
+6. Run the executable.
 
     ```zsh
     DATABASE_URL=postgres://barkyq:super_secret_password@localhost:5432/nostrdb ./gnost-relay
