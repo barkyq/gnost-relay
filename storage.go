@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS db1 (
   etags text[],
   ptags text[],
   dtag text,
-  expiration integer,
+  expiration bigint,
   gtags text[],
   raw json
 );
@@ -177,6 +177,17 @@ CREATE TRIGGER ephemeral_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCT
 CREATE TRIGGER expiration_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION expiration_submission();
 CREATE TRIGGER param_replaceable_trigger BEFORE INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION param_replaceable_submission();
 CREATE TRIGGER submission_trigger AFTER INSERT ON db1 FOR EACH ROW EXECUTE FUNCTION notify_submission();
+
+DO $$
+DECLARE
+	column_type text;
+BEGIN
+	SELECT data_type INTO column_type FROM information_schema.columns WHERE table_name='db1' AND column_name='expiration';
+
+	IF column_type='integer' THEN
+		ALTER TABLE db1 ALTER COLUMN expiration TYPE bigint USING expiration::bigint;
+	END IF;
+END $$;
 `)
 	return dbpool, err
 }
